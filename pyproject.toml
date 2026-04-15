@@ -1,0 +1,15 @@
+[project]
+name = "cuvslam"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.2",
+    "evo>=1.35.2",
+    "numpy>=2.4.4",
+    "pillow>=12.2.0",
+    "pyyaml>=6.0.3",
+    "rerun-sdk>=0.31.3",
+    "rosbags>=0.11.0",
+]
