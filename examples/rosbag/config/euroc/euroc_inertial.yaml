@@ -1,0 +1,75 @@
+rosbag:
+  bag_path: /home/robot/datasets/euroc/MH_03_medium
+  typestore: ROS2_FOXY
+  sync_tolerance_ms: 5.0
+  max_frames: 120
+
+topics:
+  image_topics:
+    - /cam0/image_raw
+    - /cam1/image_raw
+  depth_topic:
+  imu_topic: /imu0
+
+tracker:
+  odometry_mode: INERTIAL
+  async_sba: false
+  enable_observations_export: true
+  enable_final_landmarks_export: true
+  rectified_stereo_camera: false
+
+rig:
+  cameras:
+    - size: [752, 480]
+      focal: [460.9855047976205, 459.67892586299877]
+      principal: [366.09923470990486, 249.22157605207943]
+      rig_from_camera:
+        translation: [0.0, 0.0, 0.0]
+        rotation: [0.0, 0.0, 0.0, 1.0]
+      distortion:
+        model: FISHEYE
+        params: [-0.0062748193357009315, 0.029005519692414498, -0.03438856012105873, 0.014830434499283266]
+      border_top: 0
+      border_bottom: 0
+      border_left: 0
+      border_right: 0
+
+    - size: [752, 480]
+      focal: [459.56983030590357, 458.20957848757143]
+      principal: [379.5888918566419, 255.9525258537914]
+      rig_from_camera:
+        translation: [0.1099839, -0.0005322, 0.0004407]
+        rotation: [0.0070610983106529725, 0.0006695499808315096, 0.0010990846209351899, 0.9999743265065818]
+      distortion:
+        model: FISHEYE
+        params: [0.0030523152970989243, 0.0022729295767180894, -0.0023088086978921007, 0.002031411542915807]
+      border_top: 0
+      border_bottom: 0
+      border_left: 0
+      border_right: 0
+
+  imus:
+    - rig_from_imu:
+        translation: [0.0683705, -0.0158797, -0.0035799]
+        rotation: [0.006753708654608694, -0.007468482266513932, -0.7017790936220631, 0.7123234608989366]
+      gyroscope_noise_density: 1.6968e-04
+      gyroscope_random_walk: 1.9393e-05
+      accelerometer_noise_density: 2.0000e-03
+      accelerometer_random_walk: 3.0000e-03
+      frequency: 200.0
+
+visualization:
+  enabled: true
+  app_name: rosbag_cuvslam_euroc_inertial
+  mode: connect
+  grpc_url: http://127.0.0.1:9876/proxy
+  strict: true
+  log_trajectory: true
+  log_pose: true
+  log_pose_axes: true
+  log_images: true
+  log_observations: true
+  log_depth: true
+
+output:
+  trajectory_path: output/euroc_mh03_inertial_trajectory_tum.txt

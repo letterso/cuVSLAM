@@ -1,0 +1,75 @@
+rosbag:
+  bag_path: /home/robot/datasets/tum/dataset-slides1_512_16
+  typestore: ROS2_FOXY
+  sync_tolerance_ms: 5.0
+  # max_frames: 120
+
+topics:
+  image_topics:
+    - /cam0/image_raw
+    - /cam1/image_raw
+  depth_topic:
+  imu_topic: /imu0
+
+tracker:
+  odometry_mode: INERTIAL
+  async_sba: false
+  enable_observations_export: true
+  enable_final_landmarks_export: true
+  rectified_stereo_camera: false
+
+rig:
+  cameras:
+    - size: [512, 512]
+      focal: [190.97847715128717, 190.9733070521226]
+      principal: [254.93170605935475, 256.8974428996504]
+      rig_from_camera:
+        translation: [0.0, 0.0, 0.0]
+        rotation: [0.0, 0.0, 0.0, 1.0]
+      distortion:
+        model: FISHEYE
+        params: [0.0034823894022493434, 0.0007150348452162257, -0.0020532361418706202, 0.00020293673591811182]
+      border_top: 0
+      border_bottom: 0
+      border_left: 0
+      border_right: 0
+
+    - size: [512, 512]
+      focal: [190.44236969414825, 190.4344384721956]
+      principal: [252.59949716835982, 254.91723064636983]
+      rig_from_camera:
+        translation: [0.10106343417085054, 0.0019461983992979385, 0.001015351591336788]
+        rotation: [-0.023454343884935858, 0.0003376387246486518, -0.0004038704369259648, 0.9997247651434158]
+      distortion:
+        model: FISHEYE
+        params: [0.0034003170790442797, 0.001766278153469831, -0.00266312569781606, 0.0003299517423931039]
+      border_top: 0
+      border_bottom: 0
+      border_left: 0
+      border_right: 0
+
+  imus:
+    - rig_from_imu:
+        translation: [0.04727988224914392, -0.047443232143367084, -0.0681999605066297]
+        rotation: [-0.013355440879261896, -0.694796517281233, 0.7190412460151059, -0.007688508083631546]
+      gyroscope_noise_density: 1.6e-04
+      gyroscope_random_walk: 2.2e-05
+      accelerometer_noise_density: 2.8e-03
+      accelerometer_random_walk: 8.6e-04
+      frequency: 200.0
+
+visualization:
+  enabled: true
+  app_name: rosbag_cuvslam_tum_inertial
+  mode: connect
+  grpc_url: http://127.0.0.1:9876/proxy
+  strict: true
+  log_trajectory: true
+  log_pose: true
+  log_pose_axes: true
+  log_images: true
+  log_observations: true
+  log_depth: false
+
+output:
+  trajectory_path: output/tum_slides1_inertial_trajectory_tum.txt

@@ -41,6 +41,7 @@ Explore various examples to quickly get started with cuVSLAM using [Python API (
 
 - **Monocular-Depth Visual Odometry**
     - [TUM Dataset](tum/README.md#running-monocular-depth-odometry)
+    - [ROS2 Bag (rosbags parser)](rosbag/README.md)
     - [RealSense Live Camera](realsense/README.md#running-monocular-depth-visual-odometry)
     - [ZED Live Camera](zed/live/README.md#running-monocular-depth-visual-odometry)
     - [Orbbec Live Camera](orbbec/README.md#running-monocular-depth-visual-odometry)

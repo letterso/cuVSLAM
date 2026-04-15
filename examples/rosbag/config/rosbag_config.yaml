@@ -1,0 +1,43 @@
+rosbag:
+  bag_path: dataset/ros2_bag
+  typestore: ROS2_FOXY
+  sync_tolerance_ms: 20.0
+  depth_float_to_uint16_scale: 1000.0
+
+topics:
+  image_topics:
+    - /camera/color/image_rect_raw
+  depth_topic: /camera/aligned_depth_to_color/image_raw
+  imu_topic:
+
+tracker:
+  odometry_mode: RGBD
+  async_sba: true
+  enable_observations_export: true
+  enable_final_landmarks_export: true
+  rectified_stereo_camera: true
+  rgbd_settings:
+    depth_scale_factor: 1000.0
+    depth_camera_id: 0
+    enable_depth_stereo_tracking: false
+
+rig:
+  cameras:
+    - size: [640, 480]
+      focal: [525.0, 525.0]
+      principal: [319.5, 239.5]
+      rig_from_camera:
+        translation: [0.0, 0.0, 0.0]
+        rotation: [0.0, 0.0, 0.0, 1.0]
+      border_top: 0
+      border_bottom: 0
+      border_left: 0
+      border_right: 0
+  imus: []
+
+visualization:
+  enabled: true
+  app_name: rosbag_cuvslam
+
+output:
+  trajectory_path: output/trajectory_tum.txt
