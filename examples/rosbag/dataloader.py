@@ -12,7 +12,7 @@
 # By using, reproducing, modifying, distributing, performing, or displaying any portion or element
 # of the software or derivative works thereof, you agree to be bound by this License.
 
-"""ROS2 bag dataloader utilities for synchronized image/depth and IMU streams."""
+"""ROS bag dataloader utilities for synchronized image/depth and IMU streams."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ class RosbagDataLoader:
         sync_tolerance_ns: int,
     ) -> None:
         if not bag_path.exists():
-            raise RosbagDataLoaderError(f"ROS2 bag path does not exist: {bag_path}")
+            raise RosbagDataLoaderError(f"ROS bag path does not exist: {bag_path}")
         if not image_topics:
             raise RosbagDataLoaderError("image_topics must be a non-empty list.")
         if sync_tolerance_ns < 0:

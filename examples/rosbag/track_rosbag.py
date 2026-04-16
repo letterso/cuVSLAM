@@ -12,13 +12,14 @@
 # By using, reproducing, modifying, distributing, performing, or displaying any portion or element
 # of the software or derivative works thereof, you agree to be bound by this License.
 
-"""Run cuVSLAM odometry on a ROS2 bag using rosbags."""
+"""Run cuVSLAM odometry on a ROS1 or ROS2 bag using rosbags."""
 
 from __future__ import annotations
 
 import argparse
 import os
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,18 @@ class RosbagTrackerError(RuntimeError):
     """Raised when configuration or bag content is invalid for tracking."""
 
 
+@dataclass(frozen=True)
+class RosbagSourceConfig:
+    """Normalized rosbag source options after YAML parsing and validation."""
+
+    bag_path: Path
+    bag_format: str
+    typestore_name: str
+    sync_tolerance_ns: int
+    depth_float_to_uint16_scale: float
+    max_frames: int | None
+
+
 def _load_yaml_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise RosbagTrackerError(f"Config file does not exist: {config_path}")
@@ -87,6 +100,52 @@ def _get_required_list(config: dict[str, Any], key: str) -> list[Any]:
     if not isinstance(value, list):
         raise RosbagTrackerError(f"'{key}' must be a list.")
     return value
+
+
+def _parse_rosbag_source_config(
+    config_path: Path,
+    rosbag_cfg: dict[str, Any],
+) -> RosbagSourceConfig:
+    bag_path_value = rosbag_cfg.get("bag_path")
+    if not isinstance(bag_path_value, str) or not bag_path_value:
+        raise RosbagTrackerError("rosbag.bag_path is required and must be a non-empty string.")
+
+    bag_path = _resolve_path(config_path.parent, bag_path_value)
+    if not bag_path.exists():
+        raise RosbagTrackerError(f"ROS bag path does not exist: {bag_path}")
+
+    typestore_name = str(rosbag_cfg.get("typestore", DEFAULT_TYPESTORE.name)).strip().upper()
+    if typestore_name not in Stores.__members__:
+        valid_typestores = ", ".join(sorted(Stores.__members__.keys()))
+        raise RosbagTrackerError(
+            f"Unknown rosbag.typestore '{typestore_name}'. Valid values: {valid_typestores}"
+        )
+
+    bag_format = "ros1" if typestore_name.startswith("ROS1_") else "ros2"
+
+    sync_tolerance_ns = int(float(rosbag_cfg.get("sync_tolerance_ms", 10.0)) * 1e6)
+    if sync_tolerance_ns < 0:
+        raise RosbagTrackerError("rosbag.sync_tolerance_ms must be non-negative.")
+
+    depth_float_to_uint16_scale = float(rosbag_cfg.get("depth_float_to_uint16_scale", 1000.0))
+    if depth_float_to_uint16_scale <= 0:
+        raise RosbagTrackerError("rosbag.depth_float_to_uint16_scale must be positive.")
+
+    max_frames_cfg = rosbag_cfg.get("max_frames")
+    max_frames: int | None = None
+    if max_frames_cfg is not None:
+        max_frames = int(max_frames_cfg)
+        if max_frames <= 0:
+            raise RosbagTrackerError("rosbag.max_frames must be positive when provided.")
+
+    return RosbagSourceConfig(
+        bag_path=bag_path,
+        bag_format=bag_format,
+        typestore_name=typestore_name,
+        sync_tolerance_ns=sync_tolerance_ns,
+        depth_float_to_uint16_scale=depth_float_to_uint16_scale,
+        max_frames=max_frames,
+    )
 
 
 def _get_required_pose(pose_cfg: dict[str, Any], key: str) -> cuvslam.Pose:
@@ -444,33 +503,12 @@ def run_tracking(config_path: Path) -> None:
     rosbag_cfg = _get_required_mapping(config, "rosbag")
     topics_cfg = _get_required_mapping(config, "topics")
 
-    bag_path_value = rosbag_cfg.get("bag_path")
-    if not isinstance(bag_path_value, str) or not bag_path_value:
-        raise RosbagTrackerError("rosbag.bag_path is required and must be a non-empty string.")
-
-    bag_path = _resolve_path(config_path.parent, bag_path_value)
-    if not bag_path.exists():
-        raise RosbagTrackerError(f"ROS2 bag path does not exist: {bag_path}")
-
-    typestore_name = str(rosbag_cfg.get("typestore", DEFAULT_TYPESTORE.name)).strip().upper()
-    if typestore_name not in Stores.__members__:
-        valid_typestores = ", ".join(sorted(Stores.__members__.keys()))
-        raise RosbagTrackerError(
-            f"Unknown rosbag.typestore '{typestore_name}'. Valid values: {valid_typestores}"
-        )
-
-    sync_tolerance_ns = int(float(rosbag_cfg.get("sync_tolerance_ms", 10.0)) * 1e6)
-    if sync_tolerance_ns < 0:
-        raise RosbagTrackerError("rosbag.sync_tolerance_ms must be non-negative.")
-    depth_float_to_uint16_scale = float(rosbag_cfg.get("depth_float_to_uint16_scale", 1000.0))
-    if depth_float_to_uint16_scale <= 0:
-        raise RosbagTrackerError("rosbag.depth_float_to_uint16_scale must be positive.")
-    max_frames_cfg = rosbag_cfg.get("max_frames")
-    max_frames: int | None = None
-    if max_frames_cfg is not None:
-        max_frames = int(max_frames_cfg)
-        if max_frames <= 0:
-            raise RosbagTrackerError("rosbag.max_frames must be positive when provided.")
+    rosbag_source = _parse_rosbag_source_config(config_path, rosbag_cfg)
+    bag_path = rosbag_source.bag_path
+    typestore_name = rosbag_source.typestore_name
+    sync_tolerance_ns = rosbag_source.sync_tolerance_ns
+    depth_float_to_uint16_scale = rosbag_source.depth_float_to_uint16_scale
+    max_frames = rosbag_source.max_frames
 
     image_topics = topics_cfg.get("image_topics")
     if not isinstance(image_topics, list) or not image_topics:
@@ -558,6 +596,10 @@ def run_tracking(config_path: Path) -> None:
     last_api_timestamp_ns: int | None = None
     imu_buffer: deque[tuple[int, cuvslam.ImuMeasurement]] = deque()
 
+    print("Tracking with bag source:")
+    print(f"  format: {rosbag_source.bag_format}")
+    print(f"  typestore: {rosbag_source.typestore_name}")
+    print(f"  path: {rosbag_source.bag_path}")
     print("Tracking with topic mapping:")
     for topic in data_loader.required_topics:
         print(f"  - {topic}")
@@ -685,7 +727,7 @@ def run_tracking(config_path: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Track a ROS2 bag using cuVSLAM with YAML configuration.",
+        description="Track a ROS1 or ROS2 bag using cuVSLAM with YAML configuration.",
     )
     parser.add_argument(
         "--config",
