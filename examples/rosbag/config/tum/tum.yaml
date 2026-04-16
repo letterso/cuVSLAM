@@ -29,10 +29,10 @@ rig:
       distortion:
         model: FISHEYE
         params: [0.0034823894022493434, 0.0007150348452162257, -0.0020532361418706202, 0.00020293673591811182]
-      border_top: 0
-      border_bottom: 0
-      border_left: 0
-      border_right: 0
+      border_top: 30
+      border_bottom: 30
+      border_left: 50
+      border_right: 20
 
     - size: [512, 512]
       focal: [190.44236969414825, 190.4344384721956]
@@ -43,10 +43,10 @@ rig:
       distortion:
         model: FISHEYE
         params: [0.0034003170790442797, 0.001766278153469831, -0.00266312569781606, 0.0003299517423931039]
-      border_top: 0
-      border_bottom: 0
-      border_left: 0
-      border_right: 0
+      border_top: 30
+      border_bottom: 30
+      border_left: 20
+      border_right: 50
 
   imus:
     - rig_from_imu:
