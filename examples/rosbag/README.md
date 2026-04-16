@@ -11,133 +11,132 @@ The script supports the following ROS message types:
 - `sensor_msgs/msg/Image` for depth (`mono16`, `16UC1`, `32FC1`)
 - `sensor_msgs/msg/Imu` for inertial mode
 
-## Install Dependencies
+## Quick Start
+
+### 1) Sync Python dependencies
 
 ```bash
-cd /home/robot/develop/cpp/cuVSLAM/examples
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -r rosbag/requirements.txt
+cd <path-to-cuvslam>
+uv sync
 ```
 
-## Prepare the Bag Path
+### 2) Install PyCuVSLAM
 
-The default config points to `examples/rosbag/dataset/ros2_bag`.
+Install a pre-built wheel from the
+[cuVSLAM releases page](https://github.com/nvidia-isaac/cuVSLAM/releases),
+or build and install from source as described in the
+[root README](../../README.md).
+
+1. Build manually
+
+    ```bash
+    mkdir build
+    cd build
+    cmake ..
+    make -j
+    ```
+
+2. install PyCuVSLAM from repository 
+
+    ```bash
+    CUVSLAM_BUILD_DIR=<path-to-cuvslam-build> uv pip install python/
+    ```
+
+### 3) Run tracking
 
 ```bash
-cd /home/robot/develop/cpp/cuVSLAM/examples
-mkdir -p rosbag/dataset
-SOURCE_BAG_DIR="${SOURCE_BAG_DIR:-/data/rosbags/demo_office}"; ln -sfn "$SOURCE_BAG_DIR" rosbag/dataset/ros2_bag
+cd <path-to-cuvslam>/examples/rosbag
+uv run track_rosbag.py --config config/rosbag_config.yaml
 ```
 
-## Configure Tracking Parameters
+Trajectory output is written to:
 
-Edit [rosbag_config.yaml](config/rosbag_config.yaml) and set:
+- `config/output/trajectory_tum.txt`
 
-- `rosbag.bag_path`: ROS1 `.bag` file path or ROS2 bag directory
-- `rosbag.typestore`: typestore used for decoding and bag type inference (for example `ROS1_NOETIC`, `ROS2_FOXY`)
-- `topics.image_topics`: image topic list in rig-camera order
-- `topics.depth_topic`: depth topic for RGBD mode
-- `topics.imu_topic`: IMU topic for Inertial mode
-- `rig.cameras`: camera intrinsics and extrinsics
-- `tracker.odometry_mode`: one of `RGBD`, `MONO`, `MULTICAMERA`, `INERTIAL`
-- `output.trajectory_path`: output file path (relative paths are resolved from the config file directory)
+## Parameter Reference
 
-## Run Tracking
+### CLI Argument
 
-```bash
-cd /home/robot/develop/cpp/cuVSLAM/examples/rosbag
-source ../.venv/bin/activate
-python3 track_rosbag.py --config config/rosbag_config.yaml
-```
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--config` | `examples/rosbag/rosbag_config.yaml` (script default) | Path to YAML configuration file. Use a concrete file such as `examples/rosbag/config/rosbag_config.yaml`. |
 
-After execution, the trajectory is saved to the configured path:
+### `rosbag` section
 
-- `examples/rosbag/config/output/trajectory_tum.txt`
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `rosbag.bag_path` | Yes | None | ROS1 `.bag` file path or ROS2 bag directory. Relative paths are resolved from the config file directory. |
+| `rosbag.typestore` | No | `ROS2_FOXY` | Rosbags typestore used for decoding and bag-type inference, for example `ROS1_NOETIC`, `ROS2_FOXY`. |
+| `rosbag.sync_tolerance_ms` | No | `10.0` | Timestamp tolerance (milliseconds) for multi-topic synchronization. |
+| `rosbag.depth_float_to_uint16_scale` | No | `1000.0` | Scale used when converting `float32` depth to `uint16`. |
+| `rosbag.max_frames` | No | None | Stop after this many tracked frames. Must be positive when set. |
 
-## EuRoC ROS2 Bag Quick Start
+### `topics` section
 
-This repository includes [euroc.yaml](config/euroc/euroc.yaml) configured for the dataset at:
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `topics.image_topics` | Yes | None | Ordered image topics. Order must match `rig.cameras` order. |
+| `topics.depth_topic` | RGBD mode only | None | Depth image topic used in `RGBD` mode. |
+| `topics.imu_topic` | INERTIAL mode only | None | IMU topic used in `INERTIAL` mode. |
 
-- `/home/robot/datasets/euroc/MH_03_medium`
+### `tracker` section
 
-Run it directly:
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `tracker.odometry_mode` | Yes | None | One of `MULTICAMERA`, `INERTIAL`, `RGBD`, `MONO`. |
+| `tracker.async_sba` | No | `false` | Enable asynchronous SBA pipeline. |
+| `tracker.enable_observations_export` | No | `true` | Export feature observations from tracker for debugging/visualization. |
+| `tracker.enable_final_landmarks_export` | No | `true` | Export final landmarks at the end of tracking. |
+| `tracker.rectified_stereo_camera` | No | `true` | Mark stereo input as rectified when applicable. |
+| `tracker.rgbd_settings.depth_scale_factor` | RGBD mode only | `1000.0` | Depth scale passed to RGBD tracker settings. |
+| `tracker.rgbd_settings.depth_camera_id` | RGBD mode only | `0` | Camera index used for depth in RGBD mode. |
+| `tracker.rgbd_settings.enable_depth_stereo_tracking` | RGBD mode only | `false` | Enable depth-assisted stereo behavior. |
 
-```bash
-cd /home/robot/develop/cpp/cuVSLAM
-uv run python examples/rosbag/track_rosbag.py --config examples/rosbag/config/euroc/euroc.yaml
-```
+### `rig` section
 
-The quick-start config limits processing to the first 120 synchronized frames (`rosbag.max_frames`) to speed up validation.
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `rig.cameras` | Yes | None | Camera list; must contain at least one camera. |
+| `rig.cameras[].size` | Yes | None | `[width, height]`. |
+| `rig.cameras[].focal` | Yes | None | `[fx, fy]`. |
+| `rig.cameras[].principal` | Yes | None | `[cx, cy]`. |
+| `rig.cameras[].rig_from_camera` | No | Identity if omitted | Extrinsic pose from camera to rig (`translation`, `rotation`). |
+| `rig.cameras[].distortion.model` | No | None | `BROWN` or `FISHEYE`. |
+| `rig.cameras[].distortion.params` | No | `[]` | Distortion parameters for the selected model. |
+| `rig.cameras[].border_top/bottom/left/right` | No | `0` | Per-edge crop borders. |
+| `rig.imus` | INERTIAL mode only | `[]` | IMU calibration list; at least one entry is required in inertial mode. |
+| `rig.imus[].rig_from_imu` | Yes (when IMU is used) | None | Extrinsic pose from IMU to rig (`translation`, `rotation`). |
+| `rig.imus[].gyroscope_noise_density` | Yes (when IMU is used) | None | Gyroscope noise density. |
+| `rig.imus[].gyroscope_random_walk` | Yes (when IMU is used) | None | Gyroscope random walk. |
+| `rig.imus[].accelerometer_noise_density` | Yes (when IMU is used) | None | Accelerometer noise density. |
+| `rig.imus[].accelerometer_random_walk` | Yes (when IMU is used) | None | Accelerometer random walk. |
+| `rig.imus[].frequency` | Yes (when IMU is used) | None | IMU sample frequency in Hz. |
 
-The output trajectory is written to:
+### `visualization` section
 
-- `examples/rosbag/config/euroc/output/euroc_mh03_trajectory_tum.txt`
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `visualization.enabled` | No | `true` | Enable/disable rerun logging. |
+| `visualization.app_name` | No | `rosbag_cuvslam` | Rerun application name. |
+| `visualization.mode` | No | `spawn` | `spawn` starts viewer; `connect` sends to an existing rerun server. |
+| `visualization.grpc_url` | No | `127.0.0.1:9876` | Target endpoint for `connect` mode. |
+| `visualization.strict` | No | `true` | Forwarded to `rr.init(strict=...)`. |
+| `visualization.spawn` | No | `true` | Forwarded to `rr.init(spawn=...)` in spawn mode. |
+| `visualization.log_trajectory` | No | `true` | Log 3D trajectory line strip. |
+| `visualization.log_pose` | No | `true` | Log camera transform. |
+| `visualization.log_pose_axes` | No | `true` | Log XYZ axis arrows. |
+| `visualization.log_images` | No | `true` | Log image streams. |
+| `visualization.log_observations` | No | `true` | Log 2D feature observations. |
+| `visualization.log_depth` | No | `true` | Log depth stream when `topics.depth_topic` is set. |
 
-## EuRoC Stereo-Inertial Quick Start
+### `output` section
 
-For stereo-inertial odometry (`INERTIAL` mode with `/imu0`), use [euroc_inertial.yaml](config/euroc/euroc_inertial.yaml):
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `output.trajectory_path` | No | None | Output trajectory file path. Relative paths are resolved from the config file directory. |
 
-```bash
-cd /home/robot/develop/cpp/cuVSLAM
-uv run python examples/rosbag/track_rosbag.py --config examples/rosbag/config/euroc/euroc_inertial.yaml
-```
+## Validation Rules
 
-The output trajectory is written to:
-
-- `examples/rosbag/config/euroc/output/euroc_mh03_inertial_trajectory_tum.txt`
-
-## EuRoC ROS1 Stereo-Inertial Quick Start
-
-For the ROS1 EuRoC bag `/home/robot/datasets/euroc/ros1/MH_05_difficult.bag`, use
-[euroc_inertial_mh05_ros1.yaml](config/euroc/euroc_inertial_mh05_ros1.yaml):
-
-```bash
-cd /home/robot/develop/cpp/cuVSLAM
-uv run python examples/rosbag/track_rosbag.py --config examples/rosbag/config/euroc/euroc_inertial_mh05_ros1.yaml
-```
-
-The output trajectory is written to:
-
-- `examples/rosbag/config/euroc/output/euroc_mh05_ros1_inertial_trajectory_tum.txt`
-
-## TUM Stereo-Inertial ROS2 Bag Quick Start
-
-For the TUM ROS2 bag under `/home/robot/datasets/tum/dataset-slides1_512_16`, use [tum.yaml](config/tum/tum.yaml):
-
-```bash
-cd /home/robot/develop/cpp/cuVSLAM
-uv run python examples/rosbag/track_rosbag.py --config examples/rosbag/config/tum/tum.yaml
-```
-
-The output trajectory is written to:
-
-- `examples/rosbag/config/tum/output/tum_slides1_inertial_trajectory_tum.txt`
-
-## Visualization Options
-
-The `visualization` block is fully configurable in YAML:
-
-- `enabled`: enable/disable rerun logging
-- `app_name`: rerun application name
-- `strict`: pass through to `rr.init(strict=...)`
-- `spawn`: pass through to `rr.init(spawn=...)`
-- `log_trajectory`: toggle 3D trajectory logging
-- `log_pose`: toggle camera pose transform logging
-- `log_pose_axes`: toggle XYZ axes logging
-- `log_images`: toggle image stream logging
-- `log_observations`: toggle feature observations logging
-- `log_depth`: toggle depth image logging
-
-## Stereo / Inertial Notes
-
-For stereo or multi-camera tracking, update:
-
-- `topics.image_topics` to include one topic per camera in the rig order
-- `rig.cameras` with matching camera count and extrinsics
-
-For inertial tracking, also set:
-
-- `topics.imu_topic`
-- `rig.imus` with IMU extrinsics and noise parameters
+- `len(topics.image_topics)` must match `len(rig.cameras)`.
+- `RGBD` mode requires exactly one image topic and `topics.depth_topic`.
+- `INERTIAL` mode requires `topics.imu_topic` and at least one `rig.imus` entry.
