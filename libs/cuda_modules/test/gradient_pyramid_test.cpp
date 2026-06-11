@@ -23,25 +23,16 @@
 #include "cuda_modules/gradient_pyramid.h"
 #include "sof/gradient_pyramid.h"
 #include "sof/sof_config.h"
-
-namespace {
-int random_int(int a, int b) {
-  std::random_device rd;
-  std::mt19937 mt(rd());
-  std::uniform_int_distribution<int> dist(a, b);
-  return dist(mt);
-}
-
-}  // namespace
-
 namespace test {
 using namespace cuvslam;
 
 TEST(Cuda, GradientPyramid) {
   cuda::Stream s;
 
+  std::mt19937 rng(::testing::UnitTest::GetInstance()->random_seed());
+  std::uniform_int_distribution<int> dim(30, 1080);
   for (int k = 0; k < 20; k++) {
-    size_t img_size = random_int(30, 1080);
+    size_t img_size = dim(rng);
 
     ImageMatrixT input = ImageMatrixT::Random(img_size, img_size) * 100;
 

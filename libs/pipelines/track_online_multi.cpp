@@ -90,6 +90,8 @@ bool SolverSfMMulti::solveNextFrame(int64_t time_ns, const sof::FrameState& fram
   } else {
     std::unordered_map<TrackId, Vector3T> landmarks = map_.get_recent_landmarks();
 
+    RERUN(logLandmarks3D, landmarks, "world/camera_0/images/sba_landmarks", Color(255, 255, 0), 0.01f);
+
     Isometry3T pose = rig_from_w;  // try to optimize copy, use result if success only
     if (pnp_.solve(pose, static_info_exp, obs_vector, landmarks)) {
       world_from_rig = pose.inverse();
@@ -99,6 +101,8 @@ bool SolverSfMMulti::solveNextFrame(int64_t time_ns, const sof::FrameState& fram
       static_info_exp = prev_static_info_exp_;
       result = false;
     }
+
+    RERUN(logTrajectory, rig_from_w, "world/trajectories/vo_trajectory", Color(0, 255, 0), TrajectoryType::VO);
   }
   prev_static_info_exp_ = static_info_exp;
 
@@ -138,7 +142,7 @@ void SolverSfMMulti::exportTracks(const std::vector<camera::Observation>& observ
 
   // export 2d tracks
   for (const camera::Observation& obs : observations) {
-    const ICameraModel& camera = *rig_.intrinsics[obs.cam_id];
+    const camera::ICameraModel& camera = *rig_.intrinsics[obs.cam_id];
     Vector2T uv;  // in pixels
     if (camera.denormalizePoint(obs.xy, uv)) {
       out_tracks2d.push_back({obs.cam_id, obs.id, uv});

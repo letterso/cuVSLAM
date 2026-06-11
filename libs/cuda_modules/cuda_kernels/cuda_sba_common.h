@@ -339,6 +339,8 @@ __device__ __forceinline__ T fast_cotan(T a) {
 }
 
 __device__ __forceinline__ float ComputeHuberLoss(float x_squared, float delta) {
+  if (delta <= 0.f) return 0.5f * x_squared;
+
   float delta_squared = delta * delta;
 
   if (x_squared < delta_squared) {
@@ -349,6 +351,8 @@ __device__ __forceinline__ float ComputeHuberLoss(float x_squared, float delta) 
 }
 
 __device__ __forceinline__ float ComputeDHuberLoss(float x_squared, float delta) {
+  if (delta <= 0.f) return 0.5f;
+
   float delta_squared = delta * delta;
 
   if (x_squared < delta_squared) {

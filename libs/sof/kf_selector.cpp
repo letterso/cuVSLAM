@@ -85,10 +85,11 @@ static float CalcSurvivorTracksPercentage(const TracksVector& frame1, uint32_t n
   return percentage;
 }
 
-KFSelector::KFSelector(const odom::KeyFrameSettings& kf_settings) : kf_settings_(kf_settings) {}
+KFSelector::KFSelector([[maybe_unused]] const odom::KeyFrameSettings& kf_settings) {}
 
 bool KFSelector::select(const TracksVector& cur_frame_tracks, const int64_t current_timestamp_ns,
-                        const TracksVector& last_kf_tracks, const int64_t last_kf_timestamp) {
+                        const TracksVector& last_kf_tracks, const int64_t last_kf_timestamp,
+                        const odom::KeyFrameSettings& kf_settings) {
   TRACE_EVENT ev = profiler_domain_.trace_event("KFSelector::select()", profiler_color_);
   assert(IsSorted(cur_frame_tracks));
 
@@ -104,14 +105,14 @@ bool KFSelector::select(const TracksVector& cur_frame_tracks, const int64_t curr
 
   assert(CalcNSurvivors(last_kf_tracks, cur_frame_tracks) == n_survivors_from_last);
 
-  if (CalcSurvivorTracksPercentage(last_kf_tracks, n_survivors_from_last) < kf_settings_.survivor_from_last) {
+  if (CalcSurvivorTracksPercentage(last_kf_tracks, n_survivors_from_last) < kf_settings.survivor_from_last) {
     return true;
   }
 
   // Even if there are no significant changes in the tracks,
   // it's necessary to force  keyframe selection after a certain time duration
   // to deal with the stationary cases
-  if (current_timestamp_ns - last_kf_timestamp > kf_settings_.max_timedelta_between_kfs_s * 1e9) {
+  if (current_timestamp_ns - last_kf_timestamp > kf_settings.max_timedelta_between_kfs_s * 1e9) {
     return true;
   }
 

@@ -23,7 +23,7 @@
 namespace {
 using namespace cuvslam;
 
-// pose in ground frame: -z - is forward, y - is up
+// Ground frame uses world axes; rig poses are OpenCV (+Z forward, +Y down). Second column is aligned to world +Y.
 void remove_roll_and_pitch(Isometry3T& pose_G) {
   const Vector3T old_axisX{pose_G.linear() * Vector3T::UnitX()};
   const Vector3T axisY{Vector3T::UnitY()};
@@ -35,8 +35,6 @@ void remove_roll_and_pitch(Isometry3T& pose_G) {
   pose_G.linear().col(2) = axisZ.normalized();
 }
 
-// pose in ground frame
-// -z - is forward, y - is up
 Isometry3T ground_align(const Isometry3T& pose_on_ground_unaligned_G) {
   Isometry3T pose_on_ground_G{pose_on_ground_unaligned_G};
   pose_on_ground_G.translation().y() = 0;

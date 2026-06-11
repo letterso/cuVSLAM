@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -119,14 +120,24 @@ private:
   std::unordered_map<uint32_t, uint32_t> dropped_sequences_;  // key: index, value: drops left
 };
 
+enum class ImageDropperType { Steady, Normal, Sticky };
+
+inline ImageDropperType ParseImageDropperType(const std::string& name) {
+  if (name == "steady") return ImageDropperType::Steady;
+  if (name == "normal") return ImageDropperType::Normal;
+  if (name == "sticky") return ImageDropperType::Sticky;
+  throw std::invalid_argument{"Unknown image dropper type: " + name};
+}
+
 template <typename URNG>
-std::shared_ptr<IImageDropper> CreatImageDropper(const std::string& type, URNG&& gen) {
-  if (type == "steady") {
-    return std::make_shared<SteadyImageDropper<URNG>>(std::forward<URNG>(gen));
-  } else if (type == "normal") {
-    return std::make_shared<NormalImageDropper<URNG>>(std::forward<URNG>(gen));
-  } else if (type == "sticky") {
-    return std::make_shared<StickyImageDropper<URNG>>(std::forward<URNG>(gen));
+std::shared_ptr<IImageDropper> CreateImageDropper(ImageDropperType type, URNG&& gen) {
+  switch (type) {
+    case ImageDropperType::Steady:
+      return std::make_shared<SteadyImageDropper<URNG>>(std::forward<URNG>(gen));
+    case ImageDropperType::Normal:
+      return std::make_shared<NormalImageDropper<URNG>>(std::forward<URNG>(gen));
+    case ImageDropperType::Sticky:
+      return std::make_shared<StickyImageDropper<URNG>>(std::forward<URNG>(gen));
   }
   return {};
 }

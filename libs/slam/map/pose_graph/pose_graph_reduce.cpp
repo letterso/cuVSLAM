@@ -64,7 +64,7 @@ KeyFrameId PoseGraph::GetSmallestVarianceEdgeId() const {
 }
 
 bool PoseGraph::ReduceSingleEdge(EdgeId edge_id, const PoseGraphHypothesis& pose_graph_hypothesis,
-                                 std::function<OnUpdateLandmarkRelation>& func_update_landmark_relation) {
+                                 const std::function<OnUpdateLandmarkRelation>& func_update_landmark_relation) {
   const auto it = edges_.find(edge_id);
   if (it == edges_.end()) {
     return false;
@@ -140,7 +140,7 @@ bool PoseGraph::ReduceSingleEdge(EdgeId edge_id, const PoseGraphHypothesis& pose
   if (from_pose && to_pose) {
     const auto it_keyframes = keyframes_.find(edge.from_keyframe);
     if (it_keyframes != keyframes_.end()) {
-      KeyFrame& keyframe = it_keyframes->second;
+      PoseGraphKeyFrame& keyframe = it_keyframes->second;
       keyframe.AddKeyframeTransform(*from_pose, *to_pose);
     }
   }

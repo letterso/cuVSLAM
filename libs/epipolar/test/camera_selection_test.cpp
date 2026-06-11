@@ -39,16 +39,12 @@ Vector3TVector GeneratePointsInFrontOfBothCameras(const Isometry3T& camera2, siz
   // Tranform from reference coordinate space to camera2 local coordinate space
   Isometry3T toLocalCamera2Space = camera2.inverse();
 
-  // Generate some points that we know will be in front of both cameras
-  Vector3TVector points3D =
-      utils::GeneratePointsInCube(numPoints, Vector3T(-6.0, -6.0, -12.0), Vector3T(-3.0, -3.0, -10.0));
-
-  // All points are clearly in front of camera1 because their z-coordinate is < 0 (and < MINIMUM_HITHER).
-  // Assert that all points are in front of camera2 by transforming them into camera2 coordinate space
+  // Generate some points that we know will be in front of both cameras (+Z forward, OpenCV).
+  Vector3TVector points3D = GeneratePointsInCube(numPoints, Vector3T(3.0, 3.0, 4.0), Vector3T(8.0, 8.0, 14.0));
 
   std::for_each(points3D.cbegin(), points3D.cend(), [&toLocalCamera2Space](const Vector3T& point3D) {
     Vector3T point3DInCamera2Space = toLocalCamera2Space * point3D;
-    ASSERT_LT(point3DInCamera2Space.z(), cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER);
+    ASSERT_GT(point3DInCamera2Space.z(), cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER);
   });
   return points3D;
 }
@@ -67,15 +63,12 @@ Vector3TVector GeneratePointsBehindBothCameras(const Isometry3T& camera2, size_t
   // Tranform from reference coordinate space to camera2 local coordinate space
   Isometry3T toLocalCamera2Space = camera2.inverse();
 
-  // Generate some points that we know will be in behind both cameras
-  Vector3TVector points3D =
-      utils::GeneratePointsInCube(numPoints, Vector3T(-6.0, -6.0, 10.0), Vector3T(-3.0, -3.0, 15.0));
+  // Points with negative Z in the reference frame are behind camera1 (identity, +Z forward).
+  Vector3TVector points3D = GeneratePointsInCube(numPoints, Vector3T(-6.0, -6.0, -15.0), Vector3T(-3.0, -3.0, -10.0));
 
-  // All points are clearly behind camera1 because their z-coordinate is > 0.
-  // Assert that all points are behind camera2 by transforming them into camera2 coordinate space
-
+  // Remove points that are still in front of camera2 (keep only behind w.r.t. cam2).
   auto pred = [&](const Vector3T& t) {
-    return (toLocalCamera2Space * t).z() < cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER;
+    return (toLocalCamera2Space * t).z() > cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER;
   };
   points3D.erase(std::remove_if(points3D.begin(), points3D.end(), pred), points3D.end());
 
@@ -133,7 +126,7 @@ TEST_F(CameraSelectionTest, IntersectRaysInCameraSpace_HappyPath) {
 }
 
 TEST_F(CameraSelectionTest, IntersectRaysInCameraSpace_InFrontOfBothCameras) {
-  PrepareData(Vector3T(4.0f, 3.0f, -5.0f));
+  PrepareData(Vector3T(4.0f, 3.0f, 5.0f));
 
   Vector3T actual3DPoint;
   EXPECT_TRUE(cuvslam::epipolar::IntersectRaysInReferenceSpace(camera2_, dir1_, dir2_, actual3DPoint));
@@ -147,7 +140,7 @@ TEST_F(CameraSelectionTest, IntersectRaysInCameraSpace_BehindOneCamera) {
 }
 
 TEST_F(CameraSelectionTest, IntersectRaysInCameraSpace_BehindBothCameras) {
-  PrepareData(Vector3T(2.0f, 2.0f, 10.0f));
+  PrepareData(Vector3T(2.0f, 2.0f, -10.0f));
 
   Vector3T actual3DPoint;
   EXPECT_FALSE(cuvslam::epipolar::IntersectRaysInReferenceSpace(camera2_, dir1_, dir2_, actual3DPoint));

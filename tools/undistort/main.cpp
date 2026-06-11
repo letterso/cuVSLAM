@@ -37,8 +37,8 @@ void CheckCondition(const Condition& cond, const Message& message) {
 
 std::unique_ptr<camera::ICameraModel> CreateCameraModel(const edex::Intrinsics& intrinsics) {
   return camera::CreateCameraModel(intrinsics.resolution, intrinsics.focal, intrinsics.principal,
-                                   intrinsics.distortion_model, intrinsics.distortion_params.data(),
-                                   intrinsics.distortion_params.size());
+                                   camera::StringToDistortionModel(intrinsics.distortion_model),
+                                   intrinsics.distortion_params.data(), intrinsics.distortion_params.size());
 }
 
 void Undistort(const camera::ICameraModel& input_model, const camera::ICameraModel& output_model, const cv::Mat& input,

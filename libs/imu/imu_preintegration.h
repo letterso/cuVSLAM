@@ -81,6 +81,8 @@ public:
   bool empty() const;
   size_t size() const;
 
+  const std::vector<imu::ImuMeasurement>& measurements() const { return measurements_; }
+
 private:
   std::vector<imu::ImuMeasurement> measurements_;
 

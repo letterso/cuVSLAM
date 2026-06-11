@@ -20,7 +20,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -256,7 +255,7 @@ struct ImageData {
 /**
  * @brief Image with timestamp and camera index
  */
-struct Image : public ImageData {
+struct Image : ImageData {
   int64_t timestamp_ns;   ///< Image timestamp in nanoseconds
   uint32_t camera_index;  ///< index of the camera in the rig
 };
@@ -337,8 +336,16 @@ class CUVSLAM_API Odometry {
 public:
   /// Image set
   using ImageSet = std::vector<Image>;
-  /// Gravity vector
+  /// Gravity acceleration vector (magnitude ~9.81 m/s²) in the rig / VO frame; +Y is down (OpenCV), so it is
+  /// approximately (0, +g, 0) when the rig is upright.
   using Gravity = Vector3f;
+
+  /// IMU state: velocity, gyro bias, accelerometer bias
+  struct ImuState {
+    Vector3f velocity;
+    Vector3f gyro_bias;
+    Vector3f acc_bias;
+  };
 
   /**
    * @brief Multicamera mode
@@ -448,6 +455,57 @@ public:
   static Config GetDefaultConfig() { return Config{}; }
 
   /**
+   * @brief Per-frame tracking options for Odometry::Track() (stateless)
+   *
+   * These options apply only to the current Track() call and do not affect subsequent frames.
+   * All fields carry default values; instantiate with TrackOptions{} and override only what you need.
+   *
+   * @code
+   * TrackOptions opts;
+   * opts.num_desired_tracks = 500;  // Override for this frame only
+   * auto pose = odom.Track(images, {}, {}, opts);
+   * @endcode
+   */
+  struct TrackOptions {
+    // ============================================================
+    // Feature Selection Settings (from sof::Settings)
+    // ============================================================
+
+    /// Number of desired feature tracks. Default: 450
+    int32_t num_desired_tracks = 450;
+
+    /// Image border regions to ignore (in pixels). Default: 0
+    int32_t border_top = 0;
+    int32_t border_bottom = 0;
+    int32_t border_left = 0;
+    int32_t border_right = 0;
+
+    /// Enable box filter preprocessing for this frame. Default: false
+    bool box3_prefilter = false;
+
+    /// Enable RANSAC filtering for this frame. Default: false
+    bool ransac_filter = false;
+
+    // ============================================================
+    // Keyframe Settings (from KeyFrameSettings)
+    // ============================================================
+
+    /// Keyframe selection threshold: frame becomes keyframe if survivor tracks
+    /// from last keyframe falls below this percentage (0-100). Default: 41.f
+    float kf_survivor_from_last = 41.f;
+
+    /// Maximum time delta between consecutive keyframes (in seconds). Default: 60
+    int64_t kf_max_timedelta_between_kfs_s = 60;
+  };
+
+  // TODO(vikuznetsov): remove when https://gcc.gnu.org/bugzilla/show_bug.cgi?id=88165 is fixed
+  /// @brief Get default track options.
+  ///
+  /// @see TrackOptions for default values.
+  /// @return default track options
+  static TrackOptions GetDefaultTrackOptions() { return TrackOptions{}; }
+
+  /**
    * @brief State of the odometry tracker
    *
    * Only available if data export is enabled in Config.
@@ -475,7 +533,7 @@ public:
    * @throws std::runtime_error if tracker fails to initialize
    * @throws std::invalid_argument if rig or config is invalid
    */
-  Odometry(const Rig& rig, const Config& cfg = GetDefaultConfig());
+  explicit Odometry(const Rig& rig, const Config& cfg = GetDefaultConfig());
 
   /**
    * @brief Move constructor
@@ -511,13 +569,18 @@ public:
    * cameras. Corresponding cameras are identified by Image::camera_index.
    * @param[in]  depths  (Optional) an array of corresponding depth images. One depth image is now supported.
    * Must use ImageData::Encoding::MONO and ImageData::DataType::UINT16 or ImageData::DataType::FLOAT32.
+   * @param[in]  options (Optional) per-frame options that override default settings for this call only.
+   * The options do not affect subsequent Track() calls - each call is independent (stateless).
    *
    * @return On success `PoseEstimate` contains estimated rig pose, on failure `PoseEstimate::world_from_rig` will be
    * `nullopt`.
    * @throws std::invalid_argument if image parameters are invalid
    * @throws std::runtime_error in case of unexpected errors
+   *
+   * @see TrackOptions for available per-frame parameters
    */
-  PoseEstimate Track(const ImageSet& images, const ImageSet& masks = {}, const ImageSet& depths = {});
+  PoseEstimate Track(const ImageSet& images, const ImageSet& masks = {}, const ImageSet& depths = {},
+                     const TrackOptions& options = GetDefaultTrackOptions());
 
   /**
    * @brief Register IMU measurement
@@ -570,12 +633,18 @@ public:
   /**
    * @brief Get Last Gravity
    *
-   * Get gravity vector in the last VO frame
+   * Get gravity acceleration vector in the last VO / rig frame (+Y down, OpenCV convention).
    * @return Optional gravity vector. Empty if gravity is not yet available.
    * @throws std::invalid_argument if IMU fusion is disabled
    * @see Gravity
    */
   std::optional<Gravity> GetLastGravity() const;
+
+  /**
+   * @brief Get current IMU state (velocity, gyro bias, acc bias).
+   * @return IMU state or nullopt before the first successful track.
+   */
+  std::optional<ImuState> GetImuState() const;
 
   /**
    * @brief Get tracker state
@@ -586,7 +655,7 @@ public:
    * @throws std::invalid_argument if stats export is disabled
    * @see State
    */
-  void GetState(Odometry::State& state) const;
+  void GetState(State& state) const;
 
   /**
    * @brief Get all final landmarks from all frames
@@ -624,12 +693,12 @@ struct Result {
   /// Create a success result
   /// @param[in] value data
   /// @return Result
-  static Result<T> Success(T&& value) { return Result<T>{std::move(value), ""}; }
+  static Result Success(T&& value) { return Result{std::move(value), ""}; }
 
   /// Create an error result
   /// @param[in] message error message
   /// @return Result
-  static Result<T> Error(std::string_view message) { return Result<T>{std::nullopt, message}; }
+  static Result Error(std::string_view message) { return Result{std::nullopt, message}; }
 };
 
 /**
@@ -670,6 +739,9 @@ public:
     /// Minimum time interval between loop closure events in milliseconds.
     /// 1000 is suitable for real-time mapping.
     uint32_t throttling_time_ms = 0;
+    /// How long the past is preserved. Maximum time to keep odometries delta history to be able to process
+    /// LocalizeInMap within timestamps from past.
+    uint32_t retention_time_ms = 5000;
   };
 
   // TODO(vikuznetsov): remove when https://gcc.gnu.org/bugzilla/show_bug.cgi?id=88165 is fixed
@@ -686,7 +758,6 @@ public:
     float horizontal_step;           ///< horizontal step in meters
     float vertical_step;             ///< vertical step in meters
     float angular_step_rads;         ///< angular step around vertical axis in radians
-    bool enable_reading_internals;   ///< enable reading internal data from SLAM
   };
 
   /**
@@ -706,14 +777,10 @@ public:
    * @brief Data layer for SLAM
    */
   enum class DataLayer : uint8_t {
-    Landmarks,             ///< Landmarks that are visible in the current frame
-    Map,                   ///< Landmarks of the map
-    LoopClosure,           ///< Map's landmarks that are visible in the last loop closure event
-    PoseGraph,             ///< Pose Graph
-    LocalizerProbes,       ///< Localizer probes
-    LocalizerMap,          ///< Landmarks of the Localizer map (opened database)
-    LocalizerLandmarks,    ///< Landmarks that are visible in the localization
-    LocalizerLoopClosure,  ///< Landmarks that are visible in the final loop closure of the localization
+    Landmarks,    ///< Landmarks that are visible in the current frame
+    Map,          ///< Landmarks of the map
+    LoopClosure,  ///< Map's landmarks that are visible in the last loop closure event
+    PoseGraph,    ///< Pose Graph
     Max,
   };
 
@@ -763,31 +830,6 @@ public:
   };
 
   /**
-   * @brief Localizer probe
-   *
-   * Debug data from localizer for internal use.
-   */
-  struct LocalizerProbe {
-    uint64_t id;                ///< probe identifier
-    Pose guess_pose;            ///< input hint
-    Pose exact_result_pose;     ///< exact pose if localizer success
-    float weight;               ///< input weight
-    float exact_result_weight;  ///< result weight
-    bool solved;                ///< true for solved, false for unsolved
-  };
-
-  /**
-   * @brief Localizer probes array.
-   *
-   * Debug data from localizer for internal use.
-   */
-  struct LocalizerProbes {
-    int64_t timestamp_ns;                ///< timestamp of localizer try in nanoseconds
-    float size;                          ///< size of search area in meters
-    std::vector<LocalizerProbe> probes;  ///< list of probes
-  };
-
-  /**
    * Construct a SLAM instance with rig and primary cameras
    * @param[in] rig Camera rig configuration
    * @param[in] primary_cameras Vector of primary camera indices
@@ -817,12 +859,6 @@ public:
   Pose Track(const Odometry::State& state, const Pose* gt_pose = nullptr);
 
   /**
-   * Set rig pose estimated by a user.
-   * @param[in] pose rig pose estimated by a user
-   */
-  void SetSlamPose(const Pose& pose);
-
-  /**
    * Get all SLAM poses for each frame.
    * @param[in] max_poses_count maximum number of poses to return
    * @param[out] poses Vector of poses with timestamps
@@ -839,23 +875,29 @@ public:
    */
   void SaveMap(const std::string_view& folder_name, std::function<void(bool success)> callback) const;
 
-  /// Localization callback, may be called in a separate thread
-  using LocalizationCallback = std::function<void(const Result<Pose>& result)>;
+  /// Callback invoked when localization starts, may be called in a separate thread
+  using LocalizeStartCB = std::function<void()>;
+  /// Callback invoked when localization finishes, may be called in a separate thread
+  using LocalizeFinishCB = std::function<void(const Result<Pose>& result)>;
 
   /**
-   * Localize in the existing database (map) asynchronously.
-   * Finds the position of the camera in existing SLAM database (map).
-   * If successful, moves the SLAM pose to the found position.
-   * @param[in] folder_name Folder name, which stores saved SLAM database (map)
-   * @param[in] guess_pose Pointer to the proposed pose, where the robot might be
-   * @param[in] images Observed images. Will be used if Config::slam_sync_mode = true
+   * Localize in the existing database (map).
+   * If `Config.sync_mode` is false, the request is queued for the background slam thread; the callback runs when
+   * localization finishes (possibly on another thread than the caller). If `Config.sync_mode` is true, localization
+   * runs immediately before this call returns.
+   * Finds the rig pose in the saved map. If successful, replace current map with saved one.
+   * @param[in] folder_name Folder containing the saved SLAM map (database)
+   * @param[in] timestamp_ns Time in nanoseconds for the localized pose. If all images timestamps are equal, it makes
+   *                         sense to use images[0].timestamp_ns.
+   * @param[in] guess_pose Initial guess for rig pose at the images' timestamp
+   * @param[in] images Observed images from multicamera (1 - mono, 2 - stereo, etc.)
    * @param[in] settings Localization settings
-   * @param[in] callback Callback function to be called when localization is complete, may be called in a separate
-   * thread.
-   * @note Errors will be reported in the callback.
+   * @param[in] start_cb Called when localization starts, may be called in a separate thread
+   * @param[in] finish_cb Called when localization completes, may be called in a separate thread
    */
-  void LocalizeInMap(const std::string_view& folder_name, const Pose& guess_pose, const ImageSet& images,
-                     LocalizationSettings settings, LocalizationCallback callback);
+  void LocalizeInMap(const std::string_view& folder_name, int64_t timestamp_ns, const Pose& guess_pose,
+                     const ImageSet& images, const LocalizationSettings& settings, LocalizeStartCB start_cb,
+                     LocalizeFinishCB finish_cb);
 
   /**
    * Get SLAM metrics.
@@ -894,25 +936,6 @@ public:
    * @return Pose graph
    */
   std::shared_ptr<const PoseGraph> ReadPoseGraph();
-
-  /**
-   * Read localizer probes. Enabled by `EnableReadingData(DataLayer::LocalizerProbes)`.
-   *
-   * Debug data from localizer for internal use.
-   * @return Localizer probes
-   */
-  std::shared_ptr<const LocalizerProbes> ReadLocalizerProbes();
-
-  /**
-   * Merge existing maps into one map.
-   * @param[in] rig Camera rig configuration
-   * @param[in] databases Input array of directories with existing databases
-   * @param[in] output_folder Directory to save output database
-   * @throws std::runtime_error if merge fails
-   * @see Rig
-   */
-  static void MergeMaps(const Rig& rig, const std::vector<std::string_view>& databases,
-                        const std::string_view& output_folder);
 
 private:
   class Impl;

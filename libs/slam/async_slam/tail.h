@@ -35,19 +35,17 @@ namespace cuvslam::slam {
 // All posses in world space
 class Tail {
 public:
-  Tail(const LocalizerAndMapper& slam);
-  bool IsEmpty() const { return tail_.empty(); }
-
-  // called from main thread
-  Isometry3T GetTipPose() const;
-  void Grow(int64_t timestamp_ns, const Isometry3T& pose);
   void Clear();
 
-  // called from slam thread
-  void MakeShortAndFollowBody();
+  // called from both threads
+  std::optional<std::pair<int64_t, Isometry3T>> GetTip() const;
+
+  // timestamp_ns can't be in past
+  [[nodiscard]] bool UpdateTimeByOdometry(int64_t timestamp_ns, const Isometry3T& pose);
+  // called from slam thread when LC or LoadMap. timestamp_ns can be in past
+  void UpdatePoseBySLAM(int64_t timestamp_ns, const Isometry3T& pose);
 
 private:
-  const LocalizerAndMapper& slam_;  // keep reference
   // first - timestamp us
   // second - pose in world space
   std::list<std::pair<int64_t, Isometry3T>> tail_;  // updates from main and slam thread see @tail_guard_

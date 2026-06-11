@@ -52,6 +52,9 @@ if(USE_CUDA)
     set(LIBS ${LIBS} cuda_modules)
 endif()
 
+set(HEADERS ${HEADERS} gyro_bias_nec.h)
+set(SOURCES ${SOURCES} gyro_bias_nec.cpp)
+
 setup_staticlib_project(
         MODULE_NAME ${MODULE_NAME}
         HEADERS ${HEADERS}

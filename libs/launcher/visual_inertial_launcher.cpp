@@ -17,6 +17,10 @@
 
 #include "launcher/visual_inertial_launcher.h"
 
+#include "gflags/gflags.h"
+
+DEFINE_bool(debug_imu_mode, false, "Enable IMU debug mode (pure IMU integration, no visual tracking)");
+
 namespace cuvslam::launcher {
 VisualInertialLauncher::VisualInertialLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
     : MultiCameraBaseLauncher(cameraRig, svo_settings) {
@@ -24,15 +28,16 @@ VisualInertialLauncher::VisualInertialLauncher(ICameraRig& cameraRig, const odom
 }
 
 void VisualInertialLauncher::SetupTracker(const odom::Settings& svo_settings, bool use_gpu) {
-  tracker = std::make_unique<odom::StereoInertialOdometry>(rig, fig, svo_settings, use_gpu);
+  tracker = std::make_unique<odom::StereoInertialOdometry>(rig, fig, svo_settings, use_gpu, FLAGS_debug_imu_mode);
   cameraRig_.registerIMUCallback(
       [&](const imu::ImuMeasurement& measurement) { tracker->add_imu_measurement(measurement); });
 
   tracker->enable_stat(true);
 }
 
-bool VisualInertialLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info) {
-  return tracker->track(curr_sources, {}, curr_image_ptrs, prev_image_ptrs, masks_sources, delta, pose_info);
+bool VisualInertialLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info,
+                                       const odom::TrackPerFrameSettings& per_frame) {
+  return tracker->track(curr_sources, {}, curr_image_ptrs, prev_image_ptrs, masks_sources, delta, pose_info, per_frame);
 }
 
 const odom::IVisualOdometry::VOFrameStat& VisualInertialLauncher::last_vo_stat() { return *tracker->get_last_stat(); }

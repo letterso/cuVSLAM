@@ -26,7 +26,7 @@ TEST(Slam, SlamTest) {
   const Vector2T resolution = {640, 480};
   const Vector2T focal = {320, 240};
   const Vector2T principal = {320, 240};
-  const auto camera = camera::CreateCameraModel(resolution, focal, principal, "pinhole", nullptr, 0);
+  const auto camera = camera::CreateCameraModel(resolution, focal, principal, Distortion::Model::Pinhole, nullptr, 0);
   camera::Rig rig;
   rig.intrinsics[0] = camera.get();
   rig.num_cameras = 1;
@@ -54,7 +54,7 @@ TEST(Slam, SlamTest) {
 
   // test 2: run optimize and verify nothing happened
   ASSERT_TRUE(mapper.SetPoseGraphOptimizerOptions({PoseGraphOptimizerType::Simple}));
-  ASSERT_TRUE(mapper.OptimizePoseGraph(false, 10000));
+  ASSERT_TRUE(mapper.OptimizePoseGraph(false));
   EXPECT_NEAR(mapper.GetCurrentPose().translation().x(), kTestSteps, 1e-4f);
 
   // test 3: try to add LC and verify it result false

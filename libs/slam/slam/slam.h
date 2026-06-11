@@ -47,9 +47,6 @@ struct SpatialIndexOptions {
   float cell_size = 0;
   int max_landmarks_in_cell = 100;
 };
-struct UnionWithOptions {
-  bool optimize_after_union = true;
-};
 struct VOFrameData {
   FrameId frame_id;
   uint64_t timestamp_ns;          // timestamp of image (in microseconds)
@@ -78,7 +75,6 @@ struct VOFrameData {
 //
 // 1. Mapping:
 //    - AddKeyframe() incrementally builds the map using visual odometry data.
-//    - SetAbsolutePose() integrates absolute measurements (GPS, etc.)
 //
 // 2. Loop Closure:
 //    - DetectLoopClosure() localizes current pose against existing map
@@ -92,11 +88,10 @@ public:
     bool success = false;
     Isometry3T result_pose = Isometry3T::Identity();
     Matrix6T result_pose_covariance = Matrix6T::Constant(std::numeric_limits<float>::infinity());
-    uint32_t selected_landmarks_count = 0;  // Count of selected Landmarks for LC
-    uint32_t tracked_landmarks_count = 0;   // Count of Tracked Landmarks in LC
-    uint32_t pnp_landmarks_count = 0;       // Count of Landmarks after filtering
-    uint32_t good_landmarks_count = 0;      // Count of Good Landmarks in LC if OK
-    double reprojection_error = 0;
+    uint32_t selected_landmarks_count = 0;       // Count of selected Landmarks for LC
+    uint32_t tracked_landmarks_count = 0;        // Count of Tracked Landmarks in LC
+    uint32_t pnp_landmarks_count = 0;            // Count of Landmarks after filtering
+    uint32_t good_landmarks_count = 0;           // Count of Good Landmarks in LC if OK
     std::vector<KeyFrameId> keyframes_in_sight;  // Keyframes of processed landmarks
     std::vector<LandmarkInSolver> landmarks;
     std::vector<std::pair<LandmarkId, LandmarkProbe>> discarded_landmarks;
@@ -107,13 +102,24 @@ public:
   ~LocalizerAndMapper();
 
   void SetReproduceMode(bool reproduce_mode);
+  bool GetReproduceMode() const;
+
   void SetLandmarksSpatialIndex(const SpatialIndexOptions& options);
+  SpatialIndexOptions GetLandmarksSpatialIndexOptions() const;
+
   void SetKeyframesLimit(int max_keyframes_count);
+  int GetKeyframesLimit() const;
+
   bool SetPoseGraphOptimizerOptions(const PoseGraphOptimizerOptions& options);
+  PoseGraphOptimizerOptions GetPoseGraphOptimizerOptions() const;
+
   // if keep_track_poses true - CalcFramePose() will work
   void SetKeepTrackPoses(bool keep_track_poses);
+  bool GetKeepTrackPoses() const;
+
   // should be called once before any call of AddKeyframe or SetLost
   void SetActiveCameras(const std::vector<CameraId>& cameras);
+  std::optional<std::vector<CameraId>> GetActiveCameras() const;
 
   // ----- Map building -----
 
@@ -134,18 +140,13 @@ public:
   //   images - Input images from cameras for descriptor extraction
   void AddKeyframe(const Isometry3T& from_last_keyframe, const VOFrameData& frame_data, const Images& images);
 
-  // From GPS. global_pose - absolute world pose
-  bool SetAbsolutePose(const Isometry3T& global_pose);
-
   // ----- Data query -----
 
   // Returns the current estimated pose of the camera rig in the world coordinate frame.
   //
   // The pose is updated by:
   // - AddKeyframe(): incremental update from relative odometry
-  // - SetAbsolutePose(): correction from absolute measurement (e.g., GPS)
   // - OptimizePoseGraph(): pose graph optimization refinements (after LoopClosure)
-  // - UnionWith(): map merging operations
   //
   // Note: This is the instantaneous pose estimate, not necessarily a keyframe pose.
   Isometry3T GetCurrentPose() const;
@@ -214,7 +215,7 @@ public:
   // Returns:
   //   KeyFrameId of the keyframe observing the most landmarks, or InvalidKeyFrameId if none found
   KeyFrameId FindKeyframeWithMostLandmarks(const std::vector<LandmarkInSolver>& landmarks,
-                                           PoseGraph::EdgeStat* edge_stat = nullptr) const;
+                                           PoseGraphEdgeStat* edge_stat = nullptr) const;
 
   // Update landmark probe statistics for landmarks that failed during loop closure detection.
   //
@@ -225,7 +226,8 @@ public:
   //
   // Parameters:
   //   discarded_landmarks - Pairs of (landmark_id, probe_result) for landmarks that failed
-  void UpdateLandmarkProbeStatistics(const std::vector<std::pair<LandmarkId, LandmarkProbe>>& discarded_landmarks);
+  void UpdateLandmarkProbeStatistics(
+      const std::vector<std::pair<LandmarkId, LandmarkProbe>>& discarded_landmarks) const;
 
   // Apply a successful loop closure result by integrating it into the map.
   //
@@ -251,7 +253,7 @@ public:
   //
   // The optimization updates all keyframe poses and propagates changes to the spatial index
   // grid to maintain consistency between pose graph and landmark locations.
-  bool OptimizePoseGraph(bool planar_constraints, int max_iterations);
+  bool OptimizePoseGraph(bool planar_constraints);
 
   // Rebuild the landmark spatial index grid and perform landmark cleanup.
   //
@@ -280,17 +282,8 @@ public:
   bool CalcFramePose(FrameId frame_id, Isometry3T& pose) const;
   // Find Keyframe and transform By FrameId
   bool FindKeyframeByFrame(FrameId frame_id, KeyFrameId& keyframe_id, Isometry3T& from_keyframe_to_frame) const;
-  bool FindFrameByKeyframe(KeyFrameId keyframe_id, FrameId& frame_id) const;
 
-  // Import all data from existing database to SLAM
-  // Binding data:
-  //   frame_id, (of this slam)
-  //   const_slam_keyframe_id, (of const slam)
-  //   pose_in_frame, result_pose_covariance - detected edge from const_slam_keyframe_id (const slam) to frame_id (this
-  //   slam)
-  bool UnionWith(const Map& const_map, KeyFrameId keyframe_id, KeyFrameId const_slam_keyframe_id,
-                 const Isometry3T& pose_of_frame_id_in_const_slam, const Matrix6T& covariance, Isometry3T* slam_to_head,
-                 const UnionWithOptions& options);
+  [[nodiscard]] bool SelectHeadKeyframe(KeyFrameId const_slam_keyframe_id, int64_t timestamp_ns);
 
 private:
   // ----- internal types -----
@@ -308,11 +301,13 @@ private:
     std::vector<TrackOnKeyframe> keyframes;
     size_t num_frames_not_tracked = 0;
 
-    const TrackOnKeyframe* FindKeyframe(KeyFrameId keyframe_id) const;
+    [[nodiscard]] const TrackOnKeyframe* FindKeyframe(KeyFrameId keyframe_id) const;
   };
 
   // ----- Config -----
-  std::string pose_graph_optimizer_ = "";
+  bool reproduce_mode_ = true;
+  PoseGraphOptimizerOptions pg_options_;
+  std::string pose_graph_optimizer_;
   size_t max_keyframes_count_ = 0;  // 0 means no limit
 
   // Before merged into the map, landmarks wait in 'staging3d_' until
@@ -323,8 +318,6 @@ private:
   const camera::Rig rig_;
   std::optional<std::vector<CameraId>> active_cameras_;  // should be set once before map updates
   Map map_;
-  std::optional<Isometry3T> set_start_pose_ = std::nullopt;
-  Isometry3T pose_estimate_ = Isometry3T::Identity();  // world_from_estimate
   std::map<TrackId, StagingTrack3d> staging3d_;
 
   // ----- Solvers -----
@@ -349,15 +342,12 @@ private:
   // ----- Profiler -----
   profiler::SLAMProfiler::DomainHelper profiler_domain_ = profiler::SLAMProfiler::DomainHelper("SLAM");
   uint32_t profiler_color_ = 0xFF0000;
-  Stopwatch sw_NextVoPose_[4];
 
   // ----- Internal methods -----
-  void SetCurrentPoseFromLastKeyframe(const Isometry3T& from_last_keyframe);
-
   // Attempts to add an edge between two keyframes in the pose graph.
   // Returns false if an existing edge has higher weight or if the 'start' keyframe pose is not found.
   bool AddEdgeToPoseGraph(KeyFrameId start, KeyFrameId end, const Isometry3T& start_from_end,
-                          const Matrix6T& start_from_end_covariance, PoseGraph::EdgeStat& stat);
+                          const Matrix6T& start_from_end_covariance, const PoseGraphEdgeStat& stat);
 
   // calc covariation from prev VO keyframe
   bool CalcBetweenPose(KeyFrameId from, KeyFrameId to,
@@ -365,15 +355,11 @@ private:
                        const std::map<TrackId, Vector3T>& tracks3d_rel,           // xyz in camera space
                        Isometry3T& pose, Matrix6T& covariance) const;
 
-  // select landmarks candidates for merge
-  void MergeLandmarks(KeyFrameId keyframe_id, float uv_norm_min_distance,
-                      std::function<bool(LandmarkId landmark0, LandmarkId landmark1, float ncc)> func);
-
   // callback for landmarks_spatial_index_->RemoveDeadLandmarks()
   void RemoveLandmarkRelation(LandmarkId landmark_id, KeyFrameId keyframe_id);
 
   void MoveReadyStagedLandmarksToLSI(uint64_t timestamp_ns = 0);
-  bool ReduceLandmarks(const char* weight_func);
+  bool ReduceLandmarks();
 };
 
 }  // namespace cuvslam::slam

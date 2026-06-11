@@ -27,7 +27,6 @@
 #include <random>
 
 #include "gflags/gflags.h"
-
 #ifdef WITH_OPENCV
 #include "opencv2/opencv.hpp"
 #endif
@@ -44,7 +43,7 @@ DEFINE_string(test_file, "sof/left.png", "test image");
 DEFINE_string(left, "sof/left.png", "left test image");
 DEFINE_string(right, "sof/right.png", "right test image");
 
-namespace test::sof {
+namespace test {
 using namespace cuvslam;
 
 static void TestShift(cuvslam::sof::IFeatureTracker& tracker) {
@@ -64,8 +63,7 @@ static void TestShift(cuvslam::sof::IFeatureTracker& tracker) {
       Vector2N(FLAGS_dx, FLAGS_dy),
   };
 
-  std::default_random_engine engine;
-  engine.discard(70000);
+  std::mt19937 engine(::testing::UnitTest::GetInstance()->random_seed());
   const float noise_level = static_cast<float>(FLAGS_noise);
   std::normal_distribution noise(0.f, noise_level);
 
@@ -154,9 +152,9 @@ static void TestShift(cuvslam::sof::IFeatureTracker& tracker) {
   }
 }
 
-TEST(KLTTracker, ShiftNewLK) { TestShift(*cuvslam::sof::CreateTracker("klt")); }
+TEST(KLTTracker, ShiftNewLK) { TestShift(*sof::CreateTracker(sof::TrackerType::KLT)); }
 
-TEST(KLTTracker, ShiftOldLK) { TestShift(*cuvslam::sof::CreateTracker("lk")); }
+TEST(KLTTracker, ShiftOldLK) { TestShift(*sof::CreateTracker(sof::TrackerType::LK)); }
 
 TEST(STTracker, ShiftST2) {
   auto tracker = cuvslam::sof::STTracker(20, 0);
@@ -214,9 +212,9 @@ static void TestStereo(cuvslam::sof::IFeatureTracker& tracker) {
   std::cout << "tracked " << num_tracked << " points\n";
 }
 
-TEST(KLTTracker, StereoNewLK) { TestStereo(*cuvslam::sof::CreateTracker("klt")); }
+TEST(KLTTracker, StereoNewLK) { TestStereo(*sof::CreateTracker(sof::TrackerType::KLT)); }
 
-TEST(KLTTracker, StereoOldLK) { TestStereo(*cuvslam::sof::CreateTracker("lk")); }
+TEST(KLTTracker, StereoOldLK) { TestStereo(*sof::CreateTracker(sof::TrackerType::LK)); }
 
 void TestSequence(cuvslam::sof::IFeatureTracker& tracker) {
   std::string fmt = "%s/kitti/01/01.0.%04d.png";
@@ -303,8 +301,8 @@ void TestSequence(cuvslam::sof::IFeatureTracker& tracker) {
   }
 }
 
-TEST(KLTTracker, SequenceNewLK) { TestSequence(*cuvslam::sof::CreateTracker("klt")); }
+TEST(KLTTracker, SequenceNewLK) { TestSequence(*sof::CreateTracker(sof::TrackerType::KLT)); }
 
-TEST(KLTTracker, SequenceOldLK) { TestSequence(*cuvslam::sof::CreateTracker("lk")); }
+TEST(KLTTracker, SequenceOldLK) { TestSequence(*sof::CreateTracker(sof::TrackerType::LK)); }
 
-}  // namespace test::sof
+}  // namespace test

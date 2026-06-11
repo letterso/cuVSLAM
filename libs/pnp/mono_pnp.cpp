@@ -60,7 +60,7 @@ float ComputeCost(const PoseRefinementInput& input, const Isometry3T& camera_fro
     // by skipping such points.
     // This is not a perfect solution: it reduces the total cost.
     // We compute average cost, which is not very sensitive to a few missing points.
-    if (std::abs(point.z()) < sqrt_epsilon()) continue;
+    if (point.z() <= sqrt_epsilon()) continue;
 
     ++count;
 
@@ -128,7 +128,7 @@ float ComputeCostSE3(const PoseRefinementInput& input, const Isometry3T& camera_
     // by skipping such points.
     // This is not a perfect solution: it reduces the total cost.
     // We compute average cost, which is not very sensitive to a few missing points.
-    if (std::abs(p.z()) < sqrt_epsilon()) continue;
+    if (p.z() <= sqrt_epsilon()) continue;
 
     ++count;
 
@@ -244,7 +244,7 @@ float ComputeCostSO3(const PoseRefinementInput* inputPtr, const Isometry3T& came
     // by skipping such points.
     // This is not a perfect solution: it reduces the total cost.
     // We compute average cost, which is not very sensitive to a few missing points.
-    if (std::abs(p.z()) < sqrt_epsilon()) continue;
+    if (p.z() <= sqrt_epsilon()) continue;
 
     ++count;
 

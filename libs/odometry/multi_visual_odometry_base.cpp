@@ -52,7 +52,8 @@ void MultiVisualOdometryBase::reset() {
 
 bool MultiVisualOdometryBase::track(const Sources& curr_sources, [[maybe_unused]] const DepthSources& depth_sources,
                                     sof::Images& curr_images, const sof::Images& prev_images,
-                                    const Sources& masks_sources, Isometry3T& delta, Matrix6T& static_info_exp) {
+                                    const Sources& masks_sources, Isometry3T& delta, Matrix6T& static_info_exp,
+                                    const TrackPerFrameSettings& per_frame_setting) {
   assert(depth_sources.empty());
   if (curr_images.empty()) {
     reset();
@@ -73,8 +74,9 @@ bool MultiVisualOdometryBase::track(const Sources& curr_sources, [[maybe_unused]
   sof::FrameState frame_type;
   std::unordered_map<CameraId, std::vector<camera::Observation>> observations;
 
-  const bool track_result = feature_tracker_->trackNextFrame(curr_sources, curr_images, prev_images, masks_sources,
-                                                             predicted_world_from_rig, observations, frame_type);
+  const bool track_result =
+      feature_tracker_->trackNextFrame(curr_sources, curr_images, prev_images, masks_sources, predicted_world_from_rig,
+                                       observations, frame_type, per_frame_setting);
   if (!track_result) {
     reset();
     delta = Isometry3T::Identity();

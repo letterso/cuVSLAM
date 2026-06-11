@@ -32,7 +32,10 @@ void MultiSOFBase::reset_keyframe_selector() {
 bool MultiSOFBase::trackNextFrame(const Sources& curr_sources, Images& curr_images, const Images& prev_images,
                                   const Sources& masks_sources, const Isometry3T& predicted_world_from_rig,
                                   std::unordered_map<CameraId, std::vector<camera::Observation>>& observations,
-                                  FrameState& state) {
+                                  FrameState& state, const odom::TrackPerFrameSettings& per_frame) {
+  const sof::Settings& sof_settings = per_frame.sof;
+  const odom::KeyFrameSettings& kf_settings = per_frame.kf;
+  box_prefilter_ = sof_settings.box3_prefilter;
   TRACE_EVENT ev = profiler_domain_.trace_event("trackNextFrame", profiler_color_);
 
   state = FrameState::None;
@@ -67,12 +70,17 @@ bool MultiSOFBase::trackNextFrame(const Sources& curr_sources, Images& curr_imag
     }
 
     const ImageSource& mask_src = masks_sources.at(cam_id);
-    sof->track({curr_source, curr_image}, prev_image, predicted_world_from_rig, &mask_src);
+    sof->track({curr_source, curr_image}, prev_image, predicted_world_from_rig, sof_settings, &mask_src);
   }
 
   if (num_failed_sofs == mono_sof_.size()) {
     return false;
   }
+
+  // Ensure all mono-stream GPU work (pyramid builds, LK tracking) is complete
+  // before reading results. Required for cross-stream memory visibility on
+  // architectures like Blackwell (sm_121).
+  cudaDeviceSynchronize();
 
   MulticamTracksVector primary_tracks;
   for (auto& sof : mono_sof_) {
@@ -83,13 +91,18 @@ bool MultiSOFBase::trackNextFrame(const Sources& curr_sources, Images& curr_imag
       continue;
     }
     FrameState mono_state;  // TODO: launch l->r tracking for this stereo camera only if it keyframe
-    const TracksVector& tracks_vector = sof->finish(mono_state);
+    const TracksVector& tracks_vector = sof->finish(mono_state, sof_settings);
     primary_tracks.push_back({cam_id, std::cref(tracks_vector)});
     tracks_vector.export_to_observations_vector(*rig_.intrinsics[cam_id], observations[cam_id]);
   }
 
-  if (is_keyframe(primary_tracks, current_time_ns)) {
+  if (is_keyframe(primary_tracks, current_time_ns, kf_settings)) {
     TRACE_EVENT ev1 = profiler_domain_.trace_event("prim->sec", profiler_color_);
+    // Ensure all mono-stream GPU work (pyramid builds, feature detection) is fully
+    // visible before launching stereo tracking on separate streams. Without this,
+    // cross-stream memory visibility is not guaranteed on some GPU architectures
+    // (e.g. Blackwell sm_121), leading to CUDA error 700 after ~200 frames.
+    cudaDeviceSynchronize();
     StartKeyframe();
     size_t num_prim_to_sec_tracks = 0;
     const auto& primary_cams = fid_.primary_cameras();
@@ -119,7 +132,8 @@ bool MultiSOFBase::trackNextFrame(const Sources& curr_sources, Images& curr_imag
   return true;
 }
 
-bool MultiSOFBase::is_keyframe(const MulticamTracksVector& tracks, const int64_t current_timestamp_ns) {
+bool MultiSOFBase::is_keyframe(const MulticamTracksVector& tracks, const int64_t current_timestamp_ns,
+                               const odom::KeyFrameSettings& kf_settings) {
   last_kf_tracks_vec_.reset();
   all_tracks_vec_.reset();
   for (const auto& [cam_id, tracks_vector] : tracks) {
@@ -132,7 +146,8 @@ bool MultiSOFBase::is_keyframe(const MulticamTracksVector& tracks, const int64_t
   all_tracks_vec_.sort();
   last_kf_tracks_vec_.sort();
 
-  if (kf_selector_.select(all_tracks_vec_, current_timestamp_ns, last_kf_tracks_vec_, last_kf_timestamp_)) {
+  if (kf_selector_.select(all_tracks_vec_, current_timestamp_ns, last_kf_tracks_vec_, last_kf_timestamp_,
+                          kf_settings)) {
     for (const auto& [cam_id, tracks_vector] : tracks) {
       last_kf_tracks_[cam_id] = tracks_vector;
     }

@@ -21,7 +21,6 @@
 
 #include "common/include_gtest.h"
 #include "math/transform_between_pointclouds.h"
-
 namespace test::slam {
 using namespace cuvslam;
 using Eigen::MatrixXf;
@@ -30,8 +29,7 @@ using Eigen::VectorXf;
 TEST(SlamTest, rigid_transform_3d) {
   std::vector<Vector3T> A(128);
 
-  std::random_device rd{};
-  std::mt19937 gen{rd()};
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
   std::uniform_real_distribution<> d_translate(-1, 1);
 
   for (size_t i = 0; i < A.size(); i++) {

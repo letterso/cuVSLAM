@@ -24,18 +24,6 @@
 #include "cuda_modules/cuda_convolutor.h"
 #include "sof/basic_convolutor.h"
 #include "sof/box_blur.h"
-
-namespace {
-
-int random_int(int a, int b) {
-  std::random_device rd;
-  std::mt19937 mt(rd());
-  std::uniform_int_distribution<int> dist(a, b);
-  return dist(mt);
-}
-
-}  // namespace
-
 namespace test {
 using namespace cuvslam;
 
@@ -44,9 +32,11 @@ TEST(Cuda, convKernelGradDerivX) {
   cuvslam::sof::BasicConvolutor basicConvolutor;
   cuvslam::cuda::Stream s;
 
+  std::mt19937 rng(::testing::UnitTest::GetInstance()->random_seed());
+  std::uniform_int_distribution<int> dim(15, 1920);
   for (int i = 0; i < 20; i++) {
-    size_t width = random_int(15, 1920);
-    size_t height = random_int(15, 1920);
+    size_t width = dim(rng);
+    size_t height = dim(rng);
     cuvslam::cuda::GPUImageT device_input(width, height);
     cuvslam::cuda::GPUImageT device_output(width, height);
 
@@ -75,9 +65,11 @@ TEST(Cuda, convKernelGradDerivY) {
   cuvslam::sof::BasicConvolutor basicConvolutor;
   cuvslam::cuda::Stream s;
 
+  std::mt19937 rng(::testing::UnitTest::GetInstance()->random_seed());
+  std::uniform_int_distribution<int> dim(15, 1920);
   for (int i = 0; i < 20; i++) {
-    size_t width = random_int(15, 1920);
-    size_t height = random_int(15, 1920);
+    size_t width = dim(rng);
+    size_t height = dim(rng);
     // std::cout << "wh = " << width << " " << height << std::endl;
     cuvslam::cuda::GPUImageT device_input(width, height);
     cuvslam::cuda::GPUImageT device_output(width, height);
@@ -187,9 +179,11 @@ TEST(Cuda, BoxBlur) {
   cuvslam::cuda::CudaBoxPrefilter gpu_prefilter;
   cuvslam::cuda::Stream s;
 
+  std::mt19937 rng(::testing::UnitTest::GetInstance()->random_seed());
+  std::uniform_int_distribution<int> dim(15, 1920);
   for (int i = 0; i < 20; i++) {
-    size_t width = random_int(15, 1920);
-    size_t height = random_int(15, 1920);
+    size_t width = dim(rng);
+    size_t height = dim(rng);
     cuvslam::cuda::GPUImageT device_input(width, height);
     cuvslam::cuda::GPUImageT device_output(width, height);
 

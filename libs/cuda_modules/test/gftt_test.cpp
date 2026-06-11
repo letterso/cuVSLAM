@@ -42,8 +42,7 @@ bool load_random_image(ImageMatrixT& image_1) {
   std::string kitti_images_folder = sequence_folder + "kitti/00/00";
   size_t total_images = 4541;
 
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
   std::uniform_int_distribution<size_t> distrib(0, total_images - 2);
 
   size_t image_id = distrib(gen);

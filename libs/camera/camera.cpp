@@ -1,4 +1,3 @@
-
 /*
  * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
  *
@@ -16,10 +15,22 @@
  */
 
 #include "camera/camera.h"
+
 #include "common/unaligned_types.h"
 
-namespace cuvslam::camera {
+namespace {
+using namespace cuvslam;
 
+// Returns true iff the 3x3 matrix has bottom row (0, 0, 1), i.e. is stored in canonical
+// 2D affine form. If false, consider calling .makeAffine() on the transform.
+[[maybe_unused]] bool IsBottomRowCanonicalAffine(const Eigen::Matrix3f& m) {
+  const Eigen::RowVector3f expected{0.f, 0.f, 1.f};
+
+  return m.matrix().row(2).isApprox(expected, 0);  // zero epsilon
+}
+}  // namespace
+
+namespace cuvslam::camera {
 ICameraModel::ICameraModel(const Vector2T& resolution, const Vector2T& focal, const Vector2T& principal,
                            float max_normalized_uv_radius, float max_xy_radius)
     : resolution_(resolution),
@@ -27,35 +38,26 @@ ICameraModel::ICameraModel(const Vector2T& resolution, const Vector2T& focal, co
       principal_(principal),
       max_normalized_uv_radius2_(max_normalized_uv_radius * max_normalized_uv_radius),
       max_xy_radius2_(max_xy_radius * max_xy_radius) {
-  calibration_.matrix().setZero();
-  inv_calibration_.matrix().setZero();
-
-  assert(principal_[0] >= 0.0 && principal_[1] >= 0.0);
-  assert(focal_[0] > 0.0 && focal_[1] > 0.0);  // user should always specify positive focal
-  assert(resolution_[0] > 0 && resolution_[1] > 0);
-
+  calibration_.setIdentity();
   calibration_.affine().row(0) << focal_.x(), 0, principal_.x();
   calibration_.affine().row(1) << 0, focal_.y(), principal_.y();
-  calibration_.makeAffine();
+  assert(IsBottomRowCanonicalAffine(calibration_.matrix()));
 
-  is_invertible_ = (std::abs(focal_.x()) > epsilon() && std::abs(focal_.y()) > epsilon());
+  const bool is_invertible = std::abs(focal_.x()) > epsilon() && std::abs(focal_.y()) > epsilon();
 
-  if (is_invertible_) {
-    inv_calibration_ = calibration_.inverse();
-    inv_calibration_.makeAffine();
-    assert(calibration_.isApprox(inv_calibration_.inverse(), epsilon()));
-  } else {
-    inv_calibration_.matrix().setZero();  // make sure we see all zeros in normalized points to spot the error
+  if (!is_invertible || focal_.x() < 0.f || focal_.y() < 0.f || resolution_.x() < 0.f || resolution_.y() < 0.f) {
+    std::ostringstream oss;
+    oss << "Wrong camera intrinsics. resolution=(" << resolution_.x() << ", " << resolution_.y() << ") "
+        << "focal=(" << focal_.x() << ", " << focal_.y() << ") "
+        << "principal=(" << principal_.x() << ", " << principal_.y() << ")";
+    throw std::runtime_error(oss.str());
   }
-
-  assert(is_invertible_);
+  inv_calibration_ = calibration_.inverse();
+  assert(IsBottomRowCanonicalAffine(inv_calibration_.matrix()));
+  assert(calibration_.isApprox(inv_calibration_.inverse()));  // epsilon = Eigen::NumTraits::dummy_precision = 1e-5f
 }
 
 bool ICameraModel::normalizePoint(const Vector2T& uv, Vector2T& xy) const {
-  if (!is_invertible_) {
-    return false;
-  }
-
   const Vector2T normalized_uv = inv_calibration_ * uv;
 
   if (normalized_uv.squaredNorm() > max_normalized_uv_radius2_) {
@@ -66,23 +68,17 @@ bool ICameraModel::normalizePoint(const Vector2T& uv, Vector2T& xy) const {
     return false;
   }
 
-  xy.x() *= -1.f;  // for camera coordinate system y is down, for 3d y is up. So y is flipped we need only flip x.
   return xy.squaredNorm() <= max_xy_radius2_;
 }
 
 bool ICameraModel::denormalizePoint(const Vector2T& xy, Vector2T& uv) const {
-  if (!is_invertible_) {
-    return false;
-  }
-
   if (xy.squaredNorm() > max_xy_radius2_) {
     return false;  // it isn't safe to use the model
   }
 
   Vector2T normalized_uv;
 
-  if (!distort(Vector2T(-xy.x(), xy.y()), normalized_uv))  // see normalizePoint for negative x explanation
-  {
+  if (!distort(xy, normalized_uv)) {
     return false;
   }
 
@@ -367,28 +363,27 @@ void PolynomialCameraModel::compute_distort_jacobian(const Vector2T& xy, Matrix2
 }
 
 std::unique_ptr<ICameraModel> CreateCameraModel(const Vector2T& resolution, const Vector2T& focal,
-                                                const Vector2T& principal, const std::string& distortion_model,
+                                                const Vector2T& principal, Distortion::Model model,
                                                 const float* parameters, int32_t num_parameters) {
-  const std::string dm_name{distortion_model};
-  if (dm_name == "polynomial") {
-    if (num_parameters != 8) return {};
-    return std::make_unique<PolynomialCameraModel>(resolution, focal, principal, parameters[0], parameters[1],
-                                                   parameters[4], parameters[5], parameters[6], parameters[7],
-                                                   parameters[2],   // P1!
-                                                   parameters[3]);  // P2!
-  } else if (dm_name == "brown5k") {
-    if (num_parameters != 5) return {};
-    return std::make_unique<Brown5KCameraModel>(resolution, focal, principal, parameters[0], parameters[1],
-                                                parameters[2], parameters[3], parameters[4]);
-  } else if (dm_name == "fisheye4" || dm_name == "fisheye") {
-    if (num_parameters != 4) return {};
-    return std::make_unique<FisheyeCameraModel>(resolution, focal, principal, parameters[0], parameters[1],
-                                                parameters[2], parameters[3]);
-  } else if (dm_name == "pinhole") {
-    if (num_parameters != 0) return {};
-    return std::make_unique<PinholeCameraModel>(resolution, focal, principal);
+  switch (model) {
+    case Distortion::Model::Polynomial:
+      if (num_parameters != 8) return {};
+      return std::make_unique<PolynomialCameraModel>(resolution, focal, principal, parameters[0], parameters[1],
+                                                     parameters[4], parameters[5], parameters[6], parameters[7],
+                                                     parameters[2],   // P1!
+                                                     parameters[3]);  // P2!
+    case Distortion::Model::Brown:
+      if (num_parameters != 5) return {};
+      return std::make_unique<Brown5KCameraModel>(resolution, focal, principal, parameters[0], parameters[1],
+                                                  parameters[2], parameters[3], parameters[4]);
+    case Distortion::Model::Fisheye:
+      if (num_parameters != 4) return {};
+      return std::make_unique<FisheyeCameraModel>(resolution, focal, principal, parameters[0], parameters[1],
+                                                  parameters[2], parameters[3]);
+    case Distortion::Model::Pinhole:
+      if (num_parameters != 0) return {};
+      return std::make_unique<PinholeCameraModel>(resolution, focal, principal);
   }
   return {};
 }
-
 }  // namespace cuvslam::camera

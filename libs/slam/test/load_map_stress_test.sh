@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+
+CUVSLAM_BIN=~/cuvslam/build/release
+
+CUVSLAM_MAP=/tmp/cuvslam_map
+CUVSLAM_DATASETS=/home/$USER/datasets
+
+source $CUVSLAM_BIN/cuvslam_vars.sh
+CUVSLAM_TRACKER=$CUVSLAM_BIN/bin/tracker
+
+# save map
+$CUVSLAM_TRACKER -use_slam=true -lr_tracker=lk_horizontal \
+ -edex=kitti/06 -edex_filename=stereo.edex \
+ -slam_copy_to_database=$CUVSLAM_MAP
+
+for i in $(seq 1 100); do
+  slow=$((RANDOM % 5001))
+  frame=$((RANDOM % 501))
+
+  echo "run ${i}/100: slam_simulate_slow_map_load=${slow} slam_load_and_localize_on_frame=${frame}"
+
+  $CUVSLAM_TRACKER \
+    -max_fps=100 \
+    -slam_reproduce_mode=False \
+    -use_slam=true \
+    -edex=kitti/06 \
+    -edex_filename=stereo.edex \
+    -lr_tracker=lk_horizontal \
+    -cache_uncompressed=true \
+    -slam_input_database=$CUVSLAM_MAP \
+    -slam_localize_image=$CUVSLAM_DATASETS/kitti/06/image_0/000270.png \
+    -slam_load_and_localize_timestamp=27 -slam_localize_guess_translation="[0.41739893, -4.497604, 290.2034]" \
+    -max_pose_graph_nodes=10000 \
+    -slam_simulate_slow_map_load="${slow}" \
+    -slam_load_and_localize_on_frame="${frame}"
+done
+
+echo "load_map_stress_test: all 100 runs finished successfully"

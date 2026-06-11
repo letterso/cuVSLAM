@@ -61,6 +61,7 @@ float ComputeDTruncatedLeastSquaresLoss(float x_squared, const float delta, cons
 
 float ComputeHuberLoss(float x_squared, const float delta) {
   // assert(x_squared >= 0);  TODO: restore
+  if (delta <= 0.f) return 0.5f * x_squared;
 
   const auto delta_squared = delta * delta;
 
@@ -74,6 +75,7 @@ float ComputeHuberLoss(float x_squared, const float delta) {
 // Derivative of Huber loss
 float ComputeDHuberLoss(float x_squared, const float delta) {
   // assert(x_squared >= 0);
+  if (delta <= 0.f) return 0.5f;
 
   const auto delta_squared = delta * delta;
 

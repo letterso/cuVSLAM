@@ -27,23 +27,16 @@ bool Pose::predict_pose(const Vector3T& gravity, const IMUPreintegration& preint
   const Matrix3T& R1 = w_from_imu.linear();
   const Vector3T& t1 = w_from_imu.translation();
   const Matrix3T dR = preint.GetDeltaRotation(gyro_bias);
-
-  // TODO integrate translation and velocity using gravity and accelerometer preintegration
-  // const Vector3T dV = preint.GetDeltaVelocity(gyro_bias, acc_bias);
-  // const Vector3T dP = preint.GetDeltaPosition(gyro_bias, acc_bias);
-  // p2.translation() = t1 + velocity * dt + 0.5 * dt * dt * gravity + R1 * dP;
-  // Vector3T v2 = velocity  + dt * gravity + R1 * dV;
+  const Vector3T dV = preint.GetDeltaVelocity(gyro_bias, acc_bias);
+  const Vector3T dP = preint.GetDeltaPosition(gyro_bias, acc_bias);
 
   Isometry3T p2;
   Eigen::JacobiSVD<Matrix3T> svd(R1 * dR, Eigen::ComputeFullU | Eigen::ComputeFullV);
   p2.linear() = svd.matrixU() * svd.matrixV().transpose();
-  p2.translation() = t1 + velocity * dt;
+  p2.translation() = t1 + velocity * dt + 0.5f * gravity * dt * dt + R1 * dP;
   p2.makeAffine();
 
-  Vector3T v2 = p2.linear() * R1.transpose() * velocity;
-
-  // TODO integrate covariance in preintegration and add into to new info matrix!
-  // for now just repeat the info matrix
+  Vector3T v2 = velocity + gravity * dt + R1 * dV;
 
   pose = {p2, v2, gyro_bias, acc_bias, IMUPreintegration(gyro_bias, acc_bias), info};
   return true;

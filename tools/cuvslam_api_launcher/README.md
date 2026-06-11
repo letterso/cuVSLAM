@@ -1,19 +1,66 @@
 # Test util to track, save map, localize using cuvslam API
 
-To track and save poses to a file:
-`./bin/cuvslam_api_launcher -dataset=<edex dir> -print_odom_poses=<path> -print_slam_poses=<path>`
+## Basic Usage
 
-To save map:
-`./bin/cuvslam_api_launcher -dataset=<edex dir> -output_map=<map dir>`
+### Odometry Only
+
+To track and save odometry poses:
+```bash
+./bin/cuvslam_api_launcher -dataset=<edex dir> -print_odom_poses=<path>
+```
+
+### Odometry + SLAM
+
+To enable SLAM and save both odometry and SLAM poses:
+```bash
+./bin/cuvslam_api_launcher -dataset=<edex dir> -print_odom_poses=<path> -print_slam_poses=<path> --cfg_enable_slam --cfg_enable_export
+```
+
+**Note:** SLAM requires both flags:
+- `--cfg_enable_slam` - enables SLAM tracking
+- `--cfg_enable_export` - enables observation/landmark export (required for SLAM to get odometry state)
+
+### Save Map
+
+To save a SLAM map:
+```bash
+./bin/cuvslam_api_launcher -dataset=<edex dir> -output_map=<map dir> --cfg_enable_slam --cfg_enable_export
+```
 
 To localize in map:
-`./bin/cuvslam_api_launcher -dataset=<edex dir> -loc_input_map=<map dir> -loc_input_hints=<hint file> -print_loc_poses=<path>`
+```bash
+./bin/cuvslam_api_launcher -dataset=<edex dir> -loc_input_map=<map dir> -loc_input_hints=<hint file> -print_loc_poses=<path>
+```
+
 Additional flags with default values:
 `-loc_start_frame=0 -loc_retries=0 -loc_hint_noise=0.0 -localize_forever=false -localize_wait=false -loc_random_rot=false -print_nan_on_failure=false`
 
 Hint file rows format: `timestamp x y z [optional quaternion]`
 Float timestamps in seconds and int timestamps in ns are supported. Hints must be sorted by timestamps.
 To localize, the util will use the latest hint not later than current frame.
+
+## Configuration via YAML File
+
+You can specify optional per-frame `track_options` using a YAML config file with the `--config` flag:
+
+```bash
+./bin/cuvslam_api_launcher --config=api_config.yaml --dataset=<edex dir>
+```
+
+Command-line flags will override values from the config file. See `api_config.yaml` for an example configuration with all supported options.
+
+**Note:** This launcher links the **`utils`** static library, which reads YAML and populates `TrackOptions`, `Odometry::Config`, and `Slam::Config` structs directly. Python users can do the same via `cuvslam.utils.load_track_options_from_file`.
+
+### Config File Structure
+
+```yaml
+# Per-frame overrides passed to Odometry::Track(..., options); unset keys keep init-time defaults
+track_options:
+  num_desired_tracks: 500
+  kf_survivor_from_last: 40.0
+  kf_max_timedelta_between_kfs_s: 20
+  # border_top, border_bottom, border_left, border_right, box3_prefilter, ransac_filter — see kitti_config.yaml
+```
 
 # Run tracker on EuRoC MAV Dataset (OBSOLETE)
 

@@ -43,5 +43,5 @@ TEST(Stream, MatrixAndConvert) {
   std::stringstream ss;
   ss << std::fixed << std::setprecision(0) << PoseIOManip(PoseFormat::MATRIX, true);
   ss << pose;
-  ASSERT_EQ(ss.str(), "1 0 0 -3 0 1 0 -1 0 0 1 2");
+  ASSERT_EQ(ss.str(), "1 0 0 3 0 1 0 -1 0 0 1 -2");
 }

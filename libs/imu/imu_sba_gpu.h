@@ -110,6 +110,8 @@ private:
   float prior_gyro;
   float prior_acc;
   float imu_penalty;
+  float boundary_imu_penalty;
+  float acc_rw_penalty;
 
   std::unique_ptr<cuvslam::cuda::GPUArrayPinned<int>> problem_point_ids;
   std::unique_ptr<cuvslam::cuda::GPUArrayPinned<int>> problem_pose_ids;

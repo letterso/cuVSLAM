@@ -27,11 +27,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../..', 'realsense'))
 from visualizer import RerunVisualizer
 
 # Constants
-RESOLUTION = (640, 480)
+# sl.RESOLUTION.AUTO picks the camera's native mode (HD720 on USB ZED,
+# HD1200 on ZED X). See README for the per-camera compatibility table.
+RESOLUTION = sl.RESOLUTION.AUTO
 FPS = 60
-# Calculate jitter threshold based on FPS + 2ms buffer
-FRAME_PERIOD_MS = 1000 / FPS  # Time between frames in milliseconds
-IMAGE_JITTER_THRESHOLD_NS = (FRAME_PERIOD_MS + 2) * 1e6  # Convert to nanoseconds
 RAW = False
 
 
@@ -39,6 +38,11 @@ def main():
     """Main function for stereo tracking with ZED camera."""
     # Initialize ZED camera
     zed, camera_info = setup_zed_camera(RESOLUTION, FPS)
+
+    # Derive jitter threshold from the camera's actual FPS; the ZED SDK clamps
+    # the requested FPS to the highest supported value for the chosen mode.
+    actual_fps = camera_info.camera_configuration.fps
+    image_jitter_threshold_ns = (1000 / actual_fps + 2) * 1e6  # ms -> ns, +2 ms buffer
 
     # Configure tracker
     cfg = vslam.Tracker.OdometryConfig(
@@ -83,11 +87,11 @@ def main():
                 # Check timestamp difference with previous frame
                 if prev_timestamp is not None:
                     timestamp_diff = timestamp - prev_timestamp
-                    if timestamp_diff > IMAGE_JITTER_THRESHOLD_NS:
+                    if timestamp_diff > image_jitter_threshold_ns:
                         print(
                             f"Warning: Camera stream message drop: timestamp gap "
                             f"({timestamp_diff/1e6:.2f} ms) exceeds threshold "
-                            f"{IMAGE_JITTER_THRESHOLD_NS/1e6:.2f} ms"
+                            f"{image_jitter_threshold_ns/1e6:.2f} ms"
                         )
 
                 # Store current timestamp for next iteration

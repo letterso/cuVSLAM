@@ -76,7 +76,7 @@ TEST(STTracker, TrackRotatedImageShiftOnly) {
                                                           {rotated_width - 1 - 161, 255},
                                                           {rotated_width - 1 - 157, 372}};
 
-  std::mt19937 gen;
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
   std::uniform_real_distribution<> uniform_dist{-5, 5};
 
   Matrix2T guess_affine_map;
@@ -147,7 +147,7 @@ TEST(STTracker, TrackRotatedImageFullMap) {
                                                           {rotated_width - 1 - 161, 255},
                                                           {rotated_width - 1 - 157, 372}};
 
-  std::mt19937 gen;
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
   std::uniform_real_distribution<> uniform_dist{-5, 5};
 
   Matrix2T guess_affine_map;

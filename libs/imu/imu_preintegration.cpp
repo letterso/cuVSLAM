@@ -17,6 +17,7 @@
 
 #include "imu/imu_preintegration.h"
 
+#include "common/rotation_utils.h"
 #include "imu/linear_solver.h"
 #include "imu/positive_matrix.h"
 
@@ -93,7 +94,7 @@ void IMUPreintegration::update_state(const imu::ImuCalibration& calib, const imu
   math::Exp(deltaR, ang_vel * delta_t_s);
   Matrix3T rightJ = math::twist_right_jacobian(ang_vel * delta_t_s);
 
-  dR = dR * deltaR;
+  dR = common::CalculateRotationFromSVD<float, 3>(dR * deltaR);
 
   A.block<3, 3>(0, 0) = deltaR.transpose();
   C.block<3, 3>(0, 0) = rightJ * delta_t_s;
@@ -157,9 +158,7 @@ void IMUPreintegration::GetDeltaBias(const Vector3T& new_gyro_bias, const Vector
 Matrix3T IMUPreintegration::GetDeltaRotation(const Vector3T& new_gyro_bias) const {
   Matrix3T R;
   math::Exp(R, JRg * (new_gyro_bias - gyro_bias_));
-  //    Eigen::JacobiSVD<Matrix3T> svd(dR * R, Eigen::ComputeFullU | Eigen::ComputeFullV);
-  //    R = svd.matrixU() * svd.matrixV().transpose();
-  return dR * R;
+  return common::CalculateRotationFromSVD<float, 3>(dR * R);
 }
 
 Vector3T IMUPreintegration::GetDeltaVelocity(const Vector3T& new_gyro_bias, const Vector3T& new_acc_bias) const {

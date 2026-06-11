@@ -37,8 +37,8 @@ struct TestParam {
 using TriangulationTest = TestWithParam<TestParam>;
 
 TEST_P(TriangulationTest, OptimalVsStandart) {
-  const Vector3T& points3DMinRange = Vector3T(3, 2, -16);
-  const Vector3T& points3DMaxRange = Vector3T(13, 10, -5);
+  const Vector3T& points3DMinRange = Vector3T(3, 2, 5);
+  const Vector3T& points3DMaxRange = Vector3T(13, 10, 16);
 
   const TestParam& p = GetParam();
   const Isometry3T cam1 = Isometry3T::Identity();
@@ -102,8 +102,8 @@ TEST_P(TriangulationTest, OptimalVsStandart) {
 }
 
 TEST_P(TriangulationTest, DISABLED_OptimaHomographyVsStandart) {
-  const Vector3T& points3DMinRange = Vector3T(3, 2, -16);
-  const Vector3T& points3DMaxRange = Vector3T(13, 10, -15.99f);
+  const Vector3T& points3DMinRange = Vector3T(3, 2, 5);
+  const Vector3T& points3DMaxRange = Vector3T(13, 10, 15.99f);
 
   const TestParam p(0.0f, 1.0f);
   const Isometry3T cam1 = Isometry3T::Identity();

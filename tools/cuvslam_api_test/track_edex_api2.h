@@ -19,6 +19,8 @@
 
 #include "cuvslam/cuvslam2.h"
 
+#include <string>
+
 namespace cuvslam {
 
 struct TestingSettings {
@@ -37,6 +39,6 @@ bool DoesEdexExist(const std::string& data_folder);
 
 bool DoesEdexHaveImu(const std::string& data_folder);
 
-bool TrackEdexApi2(const TestingSettings& settings, const cuvslam::Odometry::Config& cfg);
+bool TrackEdexApi2(const TestingSettings& settings, const Odometry::Config& cfg);
 
 }  // namespace cuvslam

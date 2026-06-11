@@ -24,13 +24,15 @@
 #include "common/isometry.h"
 #include "common/vector_2t.h"
 #include "common/vector_3t.h"
-#include "imu/imu_sba_problem.h"
 #include "imu/inertial_optimization.h"
 #include "sof/sof_create.h"
 
+#include "common/rerun.h"
+#include "epipolar/camera_selection.h"
 #include "pipelines/inertial_pnp.h"
 #include "pipelines/service_sba.h"
 #include "pipelines/track.h"
+#include "pipelines/visualizer.h"
 #ifdef USE_CUDA
 #include "pipelines/service_sba_gpu.h"
 #endif
@@ -38,6 +40,187 @@
 namespace cuvslam::pipelines {
 
 using Vector15T = Eigen::Matrix<float, 15, 1>;
+
+// IMU SBA refinement step used exclusively during IMU initialization.
+// Runs after optimize_inertial to jointly refine poses, 3D landmarks, velocities,
+// and biases (including acc_bias) using visual reprojection + IMU residuals.
+static void RunImuSbaInit(const map::UnifiedMap::SubMap& recent_map, const Vector3T& gravity, const camera::Rig& rig,
+                          const imu::ImuCalibration& calib, std::vector<sba_imu::Pose>& gravity_cache,
+                          sba_imu::IMUBundlerCpuFixedVel& bundler,
+                          const std::vector<std::vector<camera::Observation>>& observations_per_kf) {
+  const size_t n = recent_map.consecutive_keyframes.size();
+  if (gravity_cache.size() != n || observations_per_kf.size() != n) return;
+
+  sba_imu::ImuBAProblem problem;
+  problem.rig = rig;
+  problem.gravity = gravity;
+  problem.robustifier_scale = 1.5f;
+  problem.robustifier_scale_pose = -1.0f;
+  problem.prior_acc = 1e1;
+  problem.prior_gyro = 0;
+  problem.imu_penalty = 1e-2f;
+  problem.boundary_imu_penalty = 1e-2f;
+  problem.acc_rw_penalty = 0.1f;
+
+  // Scale observation info from the default σ=3px to σ=1px (9x stronger visual weight).
+  constexpr float visual_noise_px = 1.0f;
+  constexpr float info_scale = (3.0f / visual_noise_px) * (3.0f / visual_noise_px);
+  problem.reintegration_thresh = 1e-3f;
+
+  problem.max_iterations = 10;
+  problem.num_fixed_key_frames = CalcNumFixedKeyframes(n, 1);
+  if (problem.num_fixed_key_frames < 1) return;
+
+  // Precompute world_from_cam transforms using IMU-refined poses (gravity_cache)
+  std::vector<std::unordered_map<CameraId, Isometry3T>> world_from_cam(n);
+  for (size_t i = 0; i < n; i++) {
+    Isometry3T world_from_rig_i = gravity_cache[i].w_from_imu * calib.rig_from_imu().inverse();
+    for (CameraId cam_id = 0; cam_id < static_cast<CameraId>(rig.num_cameras); cam_id++) {
+      world_from_cam[i][cam_id] = world_from_rig_i * rig.camera_from_rig[cam_id].inverse();
+    }
+  }
+
+  // Group observations by TrackId across all keyframes for re-triangulation
+  struct TrackObs {
+    size_t kf_idx;
+    CameraId cam_id;
+    Vector2T xy;
+    Matrix2T xy_info;
+  };
+  std::unordered_map<TrackId, std::vector<TrackObs>> track_obs_map;
+  for (size_t i = 0; i < n; i++) {
+    for (const auto& obs : observations_per_kf[i]) {
+      track_obs_map[obs.id].push_back({i, obs.cam_id, obs.xy, obs.xy_info});
+    }
+  }
+
+  // Build TrackId -> LandmarkPtr mapping from the map (for write-back)
+  std::unordered_map<TrackId, map::LandmarkPtr> track_to_landmark;
+  for (size_t i = 0; i < n; i++) {
+    for (const auto& lo : recent_map.landmark_and_obs[i]) {
+      if (!lo.landmark->get_pose()) continue;
+      for (const auto& obs : lo.observations) {
+        track_to_landmark[obs.id] = lo.landmark;
+      }
+    }
+  }
+
+  // Re-triangulate each track using IMU-refined poses
+  std::unordered_map<TrackId, int> track_point_ids;
+  std::unordered_map<map::LandmarkPtr, int> landmark_point_ids;  // for write-back
+  int retriang_count = 0, total_tracks = 0;
+
+  for (auto& [track_id, obs_list] : track_obs_map) {
+    auto it = track_to_landmark.find(track_id);
+    if (it == track_to_landmark.end()) continue;  // no landmark for this track
+    total_tracks++;
+
+    bool triangulated = false;
+    Vector3T new_point;
+
+    // Try pairs from different cameras
+    for (size_t a = 0; a < obs_list.size() && !triangulated; a++) {
+      for (size_t b = a + 1; b < obs_list.size() && !triangulated; b++) {
+        if (obs_list[a].cam_id == obs_list[b].cam_id) continue;
+
+        try {
+          const auto& oa = obs_list[a];
+          const auto& ob = obs_list[b];
+          const Isometry3T& wfc_a = world_from_cam[oa.kf_idx][oa.cam_id];
+          const Isometry3T& wfc_b = world_from_cam[ob.kf_idx][ob.cam_id];
+          Isometry3T cam_a_from_cam_b = wfc_a.inverse() * wfc_b;
+
+          Vector3T xyz_in_cam_a;
+          float pm;
+          epipolar::TriangulationState ts;
+          if (epipolar::OptimalTriangulation(cam_a_from_cam_b, oa.xy, ob.xy, xyz_in_cam_a, pm, ts)) {
+            new_point = wfc_a * xyz_in_cam_a;
+            triangulated = true;
+            retriang_count++;
+          }
+        } catch (const std::exception& e) {
+          // Skip this pair if matrix inversion fails
+          continue;
+        }
+      }
+    }
+
+    if (!triangulated) {
+      // Fallback: transform landmark from old visual-only frame to IMU-refined frame
+      size_t kf_idx = obs_list[0].kf_idx;
+      const auto& kf = recent_map.consecutive_keyframes[kf_idx].keyframe;
+      Isometry3T old_world_from_rig = kf->get_pose().inverse();
+      Isometry3T new_world_from_rig = gravity_cache[kf_idx].w_from_imu * calib.rig_from_imu().inverse();
+      Isometry3T correction = new_world_from_rig * old_world_from_rig.inverse();
+      new_point = correction * (*it->second->get_pose());
+    }
+
+    int pid = static_cast<int>(problem.points.size());
+    track_point_ids[track_id] = pid;
+    landmark_point_ids[it->second] = pid;
+    problem.points.push_back(new_point);
+  }
+  if (problem.points.empty()) return;
+  TraceMessage("init_sba: re-triangulated %d/%d tracks", retriang_count, total_tracks);
+
+  for (size_t i = 0; i < n; i++) {
+    problem.rig_poses.push_back(gravity_cache[i]);
+  }
+
+  // Build SBA observations using TrackId-based point_ids
+  size_t total_observations = 0;
+  for (const auto& obs_kf : observations_per_kf) total_observations += obs_kf.size();
+  problem.observation_xys.reserve(total_observations);
+  problem.observation_infos.reserve(total_observations);
+  problem.point_ids.reserve(total_observations);
+  problem.pose_ids.reserve(total_observations);
+  problem.camera_ids.reserve(total_observations);
+
+  for (size_t i = 0; i < n; i++) {
+    for (const auto& obs : observations_per_kf[i]) {
+      auto it = track_point_ids.find(obs.id);
+      if (it == track_point_ids.end()) continue;
+      problem.observation_xys.push_back(obs.xy);
+      problem.observation_infos.push_back(obs.xy_info * info_scale);
+      problem.point_ids.push_back(it->second);
+      problem.pose_ids.push_back(static_cast<int32_t>(i));
+      problem.camera_ids.push_back(obs.cam_id);
+    }
+  }
+
+  TraceMessage("init_sba: n=%zu pts=%zu obs=%zu fixed=%d", n, problem.points.size(), problem.observation_xys.size(),
+               problem.num_fixed_key_frames);
+
+  if (!bundler.solve(problem)) {
+    TraceMessage("init_sba: solve FAILED");
+    return;
+  }
+  TraceMessage("init_sba: solve OK, iters=%d, init_cost=%.2f", problem.iterations, problem.initial_cost);
+
+  // Check how much poses moved
+  float max_pos_diff = 0, max_vel_diff = 0, max_acc_diff = 0;
+  for (size_t i = 0; i < n; i++) {
+    float pd = (problem.rig_poses[i].w_from_imu.translation() - gravity_cache[i].w_from_imu.translation()).norm();
+    float vd = (problem.rig_poses[i].velocity - gravity_cache[i].velocity).norm();
+    float ad = (problem.rig_poses[i].acc_bias - gravity_cache[i].acc_bias).norm();
+    if (pd > max_pos_diff) max_pos_diff = pd;
+    if (vd > max_vel_diff) max_vel_diff = vd;
+    if (ad > max_acc_diff) max_acc_diff = ad;
+  }
+  TraceMessage("init_sba: max_delta pos=%.4f vel=%.4f acc_bias=%.4f", max_pos_diff, max_vel_diff, max_acc_diff);
+
+  for (size_t i = 0; i < n; i++) {
+    const auto& pose = problem.rig_poses[i];
+    gravity_cache[i] = pose;
+
+    const auto& [kf, preint] = recent_map.consecutive_keyframes[i];
+    kf->set_state({calib.rig_from_imu() * pose.w_from_imu.inverse(), pose.velocity, pose.acc_bias, pose.gyro_bias});
+    if (preint) *preint = pose.preintegration;
+  }
+  for (auto& [l, pid] : landmark_point_ids) {
+    l->set_pose(problem.points[pid]);
+  }
+}
 
 SolverSfMInertial::SolverSfMInertial(map::UnifiedMap& map, const camera::Rig& rig, const sba::Settings& sba_settings,
                                      const imu::ImuCalibration& calib, bool debug_imu_mode,
@@ -48,7 +231,8 @@ SolverSfMInertial::SolverSfMInertial(map::UnifiedMap& map, const camera::Rig& ri
       debug_imu_mode_(debug_imu_mode),
       disable_fusion_except_gravity_(disable_fusion_except_gravity),
       map_(map),
-      optimizer_(1e2, 1e6),
+      optimizer_(10),
+      imu_init_bundler_(calib),
       stereo_pnp_(rig, pnp::PNPSettings::InertialSettings()),
       triangulator(rig) {
   sba::Mode sba_mode;
@@ -86,7 +270,9 @@ SolverSfMInertial::SolverSfMInertial(map::UnifiedMap& map, const camera::Rig& ri
 
   auto gravity_estimation_callback = [this](size_t num_kfs) {
     TRACE_EVENT ev = profiler_domain_.trace_event("gravity_estimation_callback");
-    auto recent_map = map_.get_recent_submap(num_kfs);
+    // Fetch all available keyframes (up to map capacity) to maximize data for optimization.
+    // num_kfs is only the minimum threshold — if the map hasn't filled yet, bail out.
+    auto recent_map = map_.get_recent_submap(map_.capacity());
 
     if (recent_map.consecutive_keyframes.size() < num_kfs) {
       TraceDebug("Not enough keyframes in map, (%d, %d)", map_.size(), num_kfs);
@@ -101,52 +287,101 @@ SolverSfMInertial::SolverSfMInertial(map::UnifiedMap& map, const camera::Rig& ri
       gravity_cache.push_back({s.rig_from_w.inverse() * rig_from_imu, s.velocity, s.gyro_bias, s.acc_bias,
                                kf.preintegration ? *kf.preintegration : IMUPreintegration()});
     }
-    if (optimizer_.optimize_inertial(gravity_cache, Rgravity, 1e-3)) {
+
+    bool imu_init_result = false;
+    bool config_use_nec_init = false;
+
+    // Extract per-keyframe observations from the submap for NEC gyro bias estimation
+    std::vector<std::vector<camera::Observation>> observations_per_kf;
+    observations_per_kf.reserve(recent_map.consecutive_keyframes.size());
+    for (const auto& lm_obs : recent_map.landmark_and_obs) {
+      std::vector<camera::Observation> kf_obs;
+      for (const auto& lo : lm_obs) {
+        for (const auto& obs : lo.observations) {
+          kf_obs.push_back(obs);
+        }
+      }
+      observations_per_kf.push_back(std::move(kf_obs));
+    }
+
+    if (config_use_nec_init) {
+      imu_init_result = optimizer_.OptimizeInertialAdaptive(gravity_cache, calib_, Rgravity, 1e-3, observations_per_kf,
+                                                            rig_.camera_from_rig[0]);
+    } else {
+      imu_init_result = optimizer_.optimize_inertial(gravity_cache, calib_, Rgravity, 1e-3);
+    }
+
+    if (imu_init_result) {
       TRACE_EVENT ev1 = profiler_domain_.trace_event("update map");
-      const Vector3T gravity = Rgravity * optimizer_.get_default_gravity();
+
+      const Vector3T gravity_for_sba = Rgravity * optimizer_.get_default_gravity();
+
+      // this step can improve accuracy, but may use some time, by default it is enabled.
+      if (enable_imu_sba_init_) {
+        RunImuSbaInit(recent_map, gravity_for_sba, rig_, calib_, gravity_cache, imu_init_bundler_, observations_per_kf);
+      }
 
       {
-        // update biases
-        const Vector3T& gyro_bias = gravity_cache[0].gyro_bias;
-        const Vector3T& acc_bias = gravity_cache[0].acc_bias;
-
+        // update biases, velocities, and preintegrations per-keyframe from SBA-refined results.
         int id = 0;
         for (const auto& kf : recent_map.consecutive_keyframes) {
           const sba_imu::Pose& pose = gravity_cache[id];
 
-          kf.keyframe->set_gyro_bias(gyro_bias);
-          kf.keyframe->set_acc_bias(acc_bias);
+          kf.keyframe->set_gyro_bias(pose.gyro_bias);
+          kf.keyframe->set_acc_bias(pose.acc_bias);
           kf.keyframe->set_velocity(pose.velocity);
+          // Write back optimized pose (rotation from IMU propagation + translation from epipolar)
+          kf.keyframe->set_pose((pose.w_from_imu * rig_from_imu.inverse()).inverse());
 
           if (kf.preintegration) {
-            kf.preintegration->SetNewBias(gyro_bias, acc_bias);
+            kf.preintegration->SetNewBias(pose.gyro_bias, pose.acc_bias);
             kf.preintegration->Reintegrate(calib_);
           }
 
           id++;
         }
 
-        curr_pose.gyro_bias = gyro_bias;
-        curr_pose.acc_bias = acc_bias;
-        curr_pose.preintegration.SetNewBias(gyro_bias, acc_bias);
+        // Use the last keyframe's refined state as the best estimate for
+        // current tracking frames, which are temporally closest to it.
+        const sba_imu::Pose& last_kf_pose = gravity_cache.back();
+
+        curr_pose.velocity = last_kf_pose.velocity;
+        curr_pose.gyro_bias = last_kf_pose.gyro_bias;
+        curr_pose.acc_bias = last_kf_pose.acc_bias;
+        curr_pose.preintegration.SetNewBias(last_kf_pose.gyro_bias, last_kf_pose.acc_bias);
         curr_pose.preintegration.Reintegrate(calib_);
 
-        // TODO: check update biases here
-        prev_pose.gyro_bias = gyro_bias;
-        prev_pose.acc_bias = acc_bias;
-        prev_pose.preintegration.SetNewBias(gyro_bias, acc_bias);
+        prev_pose.velocity = last_kf_pose.velocity;
+        prev_pose.gyro_bias = last_kf_pose.gyro_bias;
+        prev_pose.acc_bias = last_kf_pose.acc_bias;
+        prev_pose.preintegration.SetNewBias(last_kf_pose.gyro_bias, last_kf_pose.acc_bias);
         prev_pose.preintegration.Reintegrate(calib_);
 
-        integ_kf.gyro_bias = gyro_bias;
-        integ_kf.acc_bias = acc_bias;
-        integ_kf.preintegration.SetNewBias(gyro_bias, acc_bias);
+        integ_kf.velocity = last_kf_pose.velocity;
+        integ_kf.gyro_bias = last_kf_pose.gyro_bias;
+        integ_kf.acc_bias = last_kf_pose.acc_bias;
+        integ_kf.preintegration.SetNewBias(last_kf_pose.gyro_bias, last_kf_pose.acc_bias);
         integ_kf.preintegration.Reintegrate(calib_);
+
+        last_valid_pose.velocity = last_kf_pose.velocity;
+        last_valid_pose.gyro_bias = last_kf_pose.gyro_bias;
+        last_valid_pose.acc_bias = last_kf_pose.acc_bias;
+        last_valid_pose.preintegration.SetNewBias(last_kf_pose.gyro_bias, last_kf_pose.acc_bias);
+        last_valid_pose.preintegration.Reintegrate(calib_);
       }
 
-      map_.set_gravity(gravity);
-      TraceDebug("Gravity set to {%f, %f, %f}", gravity.x(), gravity.y(), gravity.z());
+      map_.set_gravity(gravity_for_sba);
 
-      // TODO: update biases here
+      const Vector3T& gyro_bias = gravity_cache.back().gyro_bias;
+      const Vector3T& acc_bias = gravity_cache.back().acc_bias;
+      const Vector3T& last_velocity = gravity_cache.back().velocity;
+      TraceMessage("[IMU INIT DONE] gravity=[%.4f,%.4f,%.4f] |g|=%.4f", gravity_for_sba.x(), gravity_for_sba.y(),
+                   gravity_for_sba.z(), gravity_for_sba.norm());
+      TraceMessage("[IMU INIT DONE] gyro_bias=[%.6f,%.6f,%.6f] acc_bias=[%.6f,%.6f,%.6f]", gyro_bias.x(), gyro_bias.y(),
+                   gyro_bias.z(), acc_bias.x(), acc_bias.y(), acc_bias.z());
+      TraceMessage("[IMU INIT DONE] last_vel=[%.3f,%.3f,%.3f] |v|=%.3f num_kfs=%zu", last_velocity.x(),
+                   last_velocity.y(), last_velocity.z(), last_velocity.norm(), gravity_cache.size());
+
       return true;
     }
     return false;
@@ -309,6 +544,8 @@ bool SolverSfMInertial::solveNextFrame(int64_t time_ns, const sof::FrameState& f
     std::copy(obs.begin(), obs.end(), std::back_inserter(obs_vector));
   }
 
+  RERUN(logObservations, obs_vector, rig_, "world/camera_0/images/observations", Color(255, 165, 0));
+
   bool no_drops = check_imu_drops(prev_pose.preintegration, calib_, prev_pose_ts_ns, time_ns);
 
   if (!map_.empty()) {
@@ -324,10 +561,19 @@ bool SolverSfMInertial::solveNextFrame(int64_t time_ns, const sof::FrameState& f
 
     if (imu_state == StateMachine::State::Ok) {
       assert(maybe_gravity != std::nullopt);
+      {
+        auto t_prev = prev_pose.w_from_imu.translation();
+        TraceMessage("[PRE-PnP] landmarks=%d obs=%d prev_t=[%.4f,%.4f,%.4f] vel=[%.3f,%.3f,%.3f]",
+                     (int)landmarks.size(), (int)obs_vector.size(), t_prev.x(), t_prev.y(), t_prev.z(),
+                     prev_pose.velocity.x(), prev_pose.velocity.y(), prev_pose.velocity.z());
+      }
       TRACE_EVENT ev2 = profiler_domain_.trace_event("runInertialPnP");
-      pnp_result = runInertialPnP(calib_, inertial_pnp_, landmarks, obs_vector, rig_, *maybe_gravity, prev_pose,
-                                  curr_pose);  // prev_pose is also updated here (if success)
-                                               //            TraceMessage("runInertialPnP result: %d", pnp_result);
+      pnp_result =
+          runInertialPnP(calib_, inertial_pnp_, landmarks, obs_vector, rig_, *maybe_gravity, prev_pose, curr_pose);
+      TraceMessage("[INERTIAL PnP] result=%d gyro=[%.6f,%.6f,%.6f] acc=[%.6f,%.6f,%.6f] vel=[%.3f,%.3f,%.3f]",
+                   (int)pnp_result, curr_pose.gyro_bias.x(), curr_pose.gyro_bias.y(), curr_pose.gyro_bias.z(),
+                   curr_pose.acc_bias.x(), curr_pose.acc_bias.y(), curr_pose.acc_bias.z(), curr_pose.velocity.x(),
+                   curr_pose.velocity.y(), curr_pose.velocity.z());
     } else {
       {
         TRACE_EVENT ev2 = profiler_domain_.trace_event("runStereoPnP");
@@ -364,37 +610,59 @@ bool SolverSfMInertial::solveNextFrame(int64_t time_ns, const sof::FrameState& f
   }
 
   integrated = !pnp_result && imu_state == StateMachine::State::Ok;
-  if (!map_.empty() && !integrated) {
+  TraceMessage(
+      "Frame: pnp=%d integrated=%d imu_state=%d obs=%d vel=[%.3f,%.3f,%.3f] gbias=[%.4f,%.4f,%.4f] "
+      "abias=[%.4f,%.4f,%.4f]",
+      pnp_result, integrated, (int)imu_state, (int)obs_vector.size(), prev_pose.velocity.x(), prev_pose.velocity.y(),
+      prev_pose.velocity.z(), prev_pose.gyro_bias.x(), prev_pose.gyro_bias.y(), prev_pose.gyro_bias.z(),
+      prev_pose.acc_bias.x(), prev_pose.acc_bias.y(), prev_pose.acc_bias.z());
+  if (!map_.empty()) {
     auto recent_map = map_.get_recent_submap(1);
+    if (!recent_map.consecutive_keyframes.empty()) {
+      auto it = recent_map.consecutive_keyframes.rbegin();
+      State s = it->keyframe->get_state();
 
-    auto it = recent_map.consecutive_keyframes.rbegin();
-
-    State s = it->keyframe->get_state();
-
-    sba_imu::IMUPreintegration preint(calib_, imu_storage_, s.gyro_bias, s.acc_bias, it->keyframe->time_ns(), time_ns);
-
-    integ_kf = {s.rig_from_w.inverse() * rig_from_imu, s.velocity, s.gyro_bias, s.acc_bias, preint};
+      // Always rebuild integ_kf from the latest KF with a fresh full preintegration
+      // to current time. This ensures IMU propagation always starts from a known-good
+      // visual anchor, avoiding accumulated error from chaining frame-to-frame steps.
+      sba_imu::IMUPreintegration preint(calib_, imu_storage_, s.gyro_bias, s.acc_bias, it->keyframe->time_ns(),
+                                        time_ns);
+      integ_kf = {s.rig_from_w.inverse() * rig_from_imu, s.velocity, s.gyro_bias, s.acc_bias, preint};
+    }
   }
 
   if (integrated) {
     integ_kf.predict_pose(*maybe_gravity, integ_kf.preintegration, curr_pose);
-
     TraceDebug("Pose was integrated!");
-
-    // investigate integration pose update here
-    integ_kf = curr_pose;
-
-    // TODO: investigate integration further.
-    // need to be sure, that all biases are calculated correctly
-    // maybe better integrate imu based of keyframe, not last frame
   }
   if (pnp_result || imu_state == StateMachine::State::Ok) {
     // either we successfully converged, or successfully integrated the pose
     world_from_rig = curr_pose.w_from_imu * imu_from_rig;
     rig_from_w = world_from_rig.inverse();
     static_info_exp = curr_pose.info.block<6, 6>(0, 0);
+
+    auto t = curr_pose.w_from_imu.translation();
+    auto t_integ = integ_kf.w_from_imu.translation();
+    TraceMessage("[POSE OUT] t=[%.4f,%.4f,%.4f] integ=[%.4f,%.4f,%.4f] diff=%.4f pnp=%d integrated=%d", t.x(), t.y(),
+                 t.z(), t_integ.x(), t_integ.y(), t_integ.z(), (t - t_integ).norm(), pnp_result, integrated);
+
     std::swap(prev_pose, curr_pose);
   }
+  RERUN(logTrajectory, rig_from_w, "world/trajectories/vo_trajectory", Color(0, 255, 0), TrajectoryType::VO);
+
+  // Propagate SBA-refined bias back to live tracking state AFTER the swap,
+  // so the updated bias survives into prev_pose for the next frame's PnP.
+  if (!map_.empty()) {
+    auto recent_map = map_.get_recent_submap(1);
+    if (!recent_map.consecutive_keyframes.empty()) {
+      State s = recent_map.consecutive_keyframes.rbegin()->keyframe->get_state();
+      prev_pose.gyro_bias = s.gyro_bias;
+      prev_pose.acc_bias = s.acc_bias;
+      TraceMessage("[SBA BIAS FEEDBACK] gyro=[%.6f,%.6f,%.6f] acc=[%.6f,%.6f,%.6f]", s.gyro_bias.x(), s.gyro_bias.y(),
+                   s.gyro_bias.z(), s.acc_bias.x(), s.acc_bias.y(), s.acc_bias.z());
+    }
+  }
+
   last_frame_preint_ = sba_imu::IMUPreintegration(prev_pose.gyro_bias, prev_pose.acc_bias);
 
   bool lost = !is_first_run && !pnp_result && !integrated;
@@ -443,7 +711,7 @@ void SolverSfMInertial::exportTracks(const std::vector<camera::Observation>& obs
 
   // export 2d tracks
   for (const camera::Observation& obs : observations) {
-    const ICameraModel& camera = *rig_.intrinsics[obs.cam_id];
+    const camera::ICameraModel& camera = *rig_.intrinsics[obs.cam_id];
     Vector2T uv;  // in pixels
     if (camera.denormalizePoint(obs.xy, uv)) {
       out_tracks2d.push_back({obs.cam_id, obs.id, uv});
@@ -479,6 +747,11 @@ std::optional<Vector3T> SolverSfMInertial::get_gravity() const {
   Vector3T gravity_rig = rig_from_w.linear() * (*gravity);
 
   return gravity_rig;
+}
+
+std::optional<SolverSfMInertial::ImuState> SolverSfMInertial::GetImuState() const {
+  if (is_first_run) return std::nullopt;
+  return ImuState{prev_pose.velocity, prev_pose.gyro_bias, prev_pose.acc_bias};
 }
 
 }  // namespace cuvslam::pipelines

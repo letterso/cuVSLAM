@@ -141,7 +141,7 @@ protected:
 
   virtual bool SetupPointsProjectionsFromCameras(const Isometry3T& camera1, const Isometry3T& camera2) {
     // Generate 3D points
-    Vector3TVector points3D = utils::GeneratePointsInCube(numPoints_, minRange_, maxRange_);
+    Vector3TVector points3D = GeneratePointsInCube(numPoints_, minRange_, maxRange_);
 
     cuvslam::epipolar::Project3DPointsInLocalCoordinates(camera1.inverse(), points3D, expectedPoints1_);
     cuvslam::epipolar::Project3DPointsInLocalCoordinates(camera2.inverse(), points3D, expectedPoints2_);

@@ -19,7 +19,6 @@
 
 #include <utility>
 
-#include "common/coordinate_system.h"
 #include "common/isometry.h"
 #include "cuvslam/internal.h"
 #include "odometry/ground_integrator.h"
@@ -28,11 +27,9 @@ namespace cuvslam {
 
 namespace {
 
-// Convert Pose (OpenCV coordinates in public API) to internal cuVSLAM isometry
-inline Isometry3T ToInternal(const Pose& pose) { return CuvslamFromOpencv(ConvertPoseToIsometry(pose)); }
+inline Isometry3T ToInternal(const Pose& pose) { return ConvertPoseToIsometry(pose); }
 
-// Convert internal cuVSLAM isometry to Pose (OpenCV) for public API
-inline Pose ToPublic(const Isometry3T& iso) { return ConvertIsometryToPose(OpencvFromCuvslam(iso)); }
+inline Pose ToPublic(const Isometry3T& iso) { return ConvertIsometryToPose(iso); }
 
 }  // namespace
 

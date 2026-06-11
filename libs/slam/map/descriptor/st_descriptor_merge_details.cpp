@@ -459,7 +459,7 @@ bool refine_mapping(int n_shift_only_iterations, int n_full_mapping_iterations, 
 
       const Vector2T a{wr_gx, wr_gy};
 
-      const auto z = t.colPivHouseholderQr().solve(a);
+      const Vector2T z = t.colPivHouseholderQr().solve(a);
       if (z.array().isNaN().any()) {
         return false;
       }

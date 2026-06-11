@@ -29,8 +29,7 @@
 
 namespace cuvslam::epipolar {
 
-// Note: if used with 3D point and it's 2D Projection, don't forget to make projection as 3D vector by multiplying
-// homogeneous version of it by -1 to set direction of it in front of the camera
+// Angular prealign: compare the 3D landmark direction in camera space to the image ray (x, y, 1) (OpenCV +Z forward).
 template <typename _Vector, typename _VectorOther, typename _Scalar = typename _Vector::Scalar>
 _Scalar AngularDistance(const _Vector& v0, const _VectorOther& v1) {
   const _Scalar norm = v0.norm() * v1.norm();
@@ -215,7 +214,7 @@ public:
     auto p3dIt = params_.p3DBegin;
 
     while (p3dIt != params_.p3DEnd) {
-      fvec(fvecIndx++) = AngularDistance(camMatInverse * *p3dIt++, -(*tt++).homogeneous());
+      fvec(fvecIndx++) = AngularDistance(camMatInverse * *p3dIt++, (*tt++).homogeneous());
     }
 
     return 0;
@@ -252,7 +251,7 @@ public:
     auto p3dIt = params_.p3DBegin;
 
     while (p3dIt != params_.p3DEnd) {
-      fvec(fvecIndx++) = AngularDistance(camMatInverse * *p3dIt++, -(*tt++).homogeneous());
+      fvec(fvecIndx++) = AngularDistance(camMatInverse * *p3dIt++, (*tt++).homogeneous());
     }
 
     return 0;

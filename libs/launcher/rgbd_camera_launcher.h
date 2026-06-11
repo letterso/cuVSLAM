@@ -29,7 +29,7 @@ public:
 protected:
   void SetupTracker(const odom::Settings& svo_settings, bool use_gpu) override;
 
-  bool launch_vo(Isometry3T& delta, Matrix6T& pose_info) override;
+  bool launch_vo(Isometry3T& delta, Matrix6T& pose_info, const odom::TrackPerFrameSettings& per_frame) override;
   const odom::IVisualOdometry::VOFrameStat& last_vo_stat() override;
 
   std::unique_ptr<odom::RGBDOdometry> tracker;

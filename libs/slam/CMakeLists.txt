@@ -15,7 +15,7 @@
 set(MODULE_NAME "slam")
 
 set(HEADERS
-    async_localizer/async_localizer.h
+    localizer/localizer.h
     async_slam/async_slam.h
     async_slam/tail.h
     common/blob.h
@@ -31,7 +31,6 @@ set(HEADERS
     map/descriptor/st_descriptor_ops.h
     map/pose_graph/pose_graph.h
     map/pose_graph/pose_graph_hypothesis.h
-    map/pose_graph/slam_optimize_options.h
     map/pose_graph/slam_posegraph_keyframe_info.h
     map/spatial_index/landmark.h
     map/spatial_index/lsi_grid.h
@@ -51,8 +50,9 @@ set(HEADERS
 )
 
 set(SOURCES
-    async_localizer/async_localizer.cpp
+    localizer/localizer.cpp
     async_slam/async_slam.cpp
+    async_slam/async_slam_localize.cpp
     async_slam/tail.cpp
     common/slam_common.cpp
     map/map.cpp
@@ -62,7 +62,7 @@ set(SOURCES
     map/pose_graph/pose_graph.cpp
     map/pose_graph/pose_graph_hypothesis.cpp
     map/pose_graph/pose_graph_optimize.cpp
-    map/pose_graph/pose_graph_optimize_subgraph.cpp
+    map/pose_graph/pose_graph_reduce.cpp
     map/spatial_index/lsi_grid.cpp
     slam/slam.cpp
     slam/slam_map_building.cpp
@@ -91,8 +91,8 @@ if (USE_CUDA)
 endif()
 
 if (USE_LMDB)
-  set(HEADERS ${HEADERS} map/database/lmdb_slam_database.h merge_map/merge_dbs.h)
-  set(SOURCES ${SOURCES} map/database/lmdb_slam_database.cpp merge_map/merge_dbs.cpp)
+  set(HEADERS ${HEADERS} map/database/lmdb_slam_database.h)
+  set(SOURCES ${SOURCES} map/database/lmdb_slam_database.cpp)
   set(LIBS ${LIBS} lmdb::lmdb)
 endif (USE_LMDB)
 

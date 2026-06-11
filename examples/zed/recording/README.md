@@ -21,6 +21,17 @@ all required dependencies.
   ```
 - **track_svo** - play the svo2 file, track, and visualise the result.
 
+  The script reads `recording.svo2` from the current working directory. To replay a file produced by
+  `record_from_zed`, copy or symlink it so the filename matches:
+
+  ```
+  cd track_svo
+  ln -sf ../record_from_zed/rec_YYYYMMDD_HH_MM_SS.svo2 recording.svo2
+  python3 track_svo.py
+  ```
+
+  To use a different filename, edit the `svo_filename` variable at the top of `track_svo.py`.
+
   Depending on your recording content, you may want to adjust the following parameters:
   * `enable_slam` - Switch between odometry and slam modes.
   * `throttle_vis` - Do not visualize all frames, just one frame per second. Makes sense for long recordings.

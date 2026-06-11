@@ -55,14 +55,11 @@ bool calculatePredictedObservation(const T* const ptr_pose_angleaxis, const T* c
   V_world_point[2] = ptr_point[2] - ptr_pose_translation[2];
   ceres::AngleAxisRotatePoint(ptr_pose_angleaxis, V_world_point, V_camera_point);
 
-  if (-V_camera_point[2] < kEPS) {
-    // Prevent divide-by-zero and points behind the camera.
+  if (V_camera_point[2] < kEPS) {
     return false;
   }
 
-  // Compute final projected point position.
-  // for "-x" see ICameraModel::normalizePoint
-  *predicted_u = *ptr_fx * (-V_camera_point[0] / V_camera_point[2]) + *ptr_cx;
+  *predicted_u = *ptr_fx * (V_camera_point[0] / V_camera_point[2]) + *ptr_cx;
   *predicted_v = *ptr_fy * (V_camera_point[1] / V_camera_point[2]) + *ptr_cy;
 
   return true;

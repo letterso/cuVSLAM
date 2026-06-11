@@ -54,7 +54,9 @@ MonoVisualOdometry::MonoVisualOdometry(const camera::Rig& rig, const Settings& s
 
 bool MonoVisualOdometry::track(const Sources& curr_sources, [[maybe_unused]] const DepthSources& depth_sources,
                                sof::Images& curr_images, const sof::Images& prev_images, const Sources& masks_sources,
-                               Isometry3T& delta, Matrix6T& static_info_exp) {
+                               Isometry3T& delta, Matrix6T& static_info_exp,
+                               const TrackPerFrameSettings& per_frame_setting) {
+  const sof::Settings& effective_sof = per_frame_setting.sof;
   assert(depth_sources.empty());
   const CameraId camera_id = 0;
   const ImageSource& left_curr_source = curr_sources.at(camera_id);
@@ -78,8 +80,8 @@ bool MonoVisualOdometry::track(const Sources& curr_sources, [[maybe_unused]] con
   }
 
   feature_tracker_->track(sof::ImageAndSource(left_curr_source, left_curr_image), left_prev_image,
-                          predicted_world_from_rig, mask_src);
-  const sof::TracksVector& tracks_vector = feature_tracker_->finish(frame_type);
+                          predicted_world_from_rig, effective_sof, mask_src);
+  const sof::TracksVector& tracks_vector = feature_tracker_->finish(frame_type, effective_sof);
   tracks_vector.export_to_observations_vector(intrinsics_, observations_);
 
   IVisualOdometry::VOFrameStat* stat = last_frame_stat_.get();

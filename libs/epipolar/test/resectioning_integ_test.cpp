@@ -137,7 +137,7 @@ public:
 
     for (int i = 0; i < 3; i++) {
       // Generate the ground truth 3D points
-      expected3DPoints_ = utils::GeneratePointsInCube(num3DPoints_, minRange_, maxRange_);
+      expected3DPoints_ = GeneratePointsInCube(num3DPoints_, minRange_, maxRange_);
 
       // Generate the 2D points for each camera for a normalized camera
       Generate2DPointsForAllCameras(expected3DPoints_, expectedCameras_, points2D_);

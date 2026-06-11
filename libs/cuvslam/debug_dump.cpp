@@ -24,7 +24,6 @@
 #include <thread>
 
 #include "cnpy.h"
-#include "common/coordinate_system.h"
 #include "common/imu_measurement.h"
 #include "common/include_json.h"
 #include "common/isometry.h"
@@ -39,6 +38,21 @@
 namespace cuvslam {
 
 namespace {
+
+std::string DistortionModelToString(Distortion::Model model) {
+  switch (model) {
+    case Distortion::Model::Polynomial:
+      return "polynomial";
+    case Distortion::Model::Brown:
+      return "brown5k";
+    case Distortion::Model::Pinhole:
+      return "pinhole";
+    case Distortion::Model::Fisheye:
+      return "fisheye4";
+  }
+  throw std::invalid_argument{"Incorrect distortion model: " +
+                              std::to_string(static_cast<std::underlying_type_t<Distortion::Model>>(model))};
+}
 void ConvertRgbToGray(uint8_t* dst, size_t dpitch, const uint8_t* src, size_t spitch, size_t width, size_t height) {
   assert(dst && src && dpitch >= width && spitch >= width * 3);
   for (size_t i = 0; i < height; i++) {
@@ -102,19 +116,19 @@ void DumpConfiguration(const std::string& input_dump_root_dir, const Rig& rig, c
     dst["intrinsics"]["focal"][0] = src.focal[0];
     dst["intrinsics"]["focal"][1] = src.focal[1];
 
-    dst["intrinsics"]["distortion_model"] = ToString(src.distortion.model);
+    dst["intrinsics"]["distortion_model"] = DistortionModelToString(src.distortion.model);
     for (Json::ArrayIndex i = 0; i < src.distortion.parameters.size(); i++) {
       dst["intrinsics"]["distortion_params"][i] = src.distortion.parameters[i];
     }
 
     std::string distortion_key = "distortion_";
-    distortion_key += ToString(src.distortion.model);
+    distortion_key += DistortionModelToString(src.distortion.model);
     for (Json::ArrayIndex p = 0; p < src.distortion.parameters.size(); p++) {
       dst["intrinsics"][distortion_key][p] = src.distortion.parameters[p];
     }
 
     // transform
-    Isometry3T rig_from_camera = CuvslamFromOpencv(ConvertPoseToIsometry(src.rig_from_camera));
+    Isometry3T rig_from_camera = ConvertPoseToIsometry(src.rig_from_camera);
     for (int y = 0; y < 3; y++) {
       for (int x = 0; x < 4; x++) {
         dst["transform"][y][x] = rig_from_camera(y, x);
@@ -131,7 +145,7 @@ void DumpConfiguration(const std::string& input_dump_root_dir, const Rig& rig, c
     dst_cfg["measurements"] = "IMU.jsonl";
     {
       // rig_from_imu
-      Isometry3T rig_from_imu = CuvslamFromOpencv(ConvertPoseToIsometry(rig.imus[0].rig_from_imu));
+      Isometry3T rig_from_imu = ConvertPoseToIsometry(rig.imus[0].rig_from_imu);
       for (int y = 0; y < 3; y++) {
         for (int x = 0; x < 4; x++) {
           dst_cfg["transform"][y][x] = rig_from_imu(y, x);
@@ -147,14 +161,25 @@ void DumpConfiguration(const std::string& input_dump_root_dir, const Rig& rig, c
     dst_cfg["use_motion_model"] = cfg.use_motion_model;
     dst_cfg["use_denoising"] = cfg.use_denoising;
     dst_cfg["use_gpu"] = cfg.use_gpu;
+    dst_cfg["async_sba"] = cfg.async_sba;
     dst_cfg["rectified_stereo_camera"] = cfg.rectified_stereo_camera;
     dst_cfg["enable_observations_export"] = cfg.enable_observations_export;
     dst_cfg["enable_landmarks_export"] = cfg.enable_landmarks_export;
+    dst_cfg["enable_final_landmarks_export"] = cfg.enable_final_landmarks_export;
+    dst_cfg["debug_imu_mode"] = cfg.debug_imu_mode;
+    dst_cfg["max_frame_delta_s"] = cfg.max_frame_delta_s;
     dst_cfg["multicam_mode"] = ToUnderlying(cfg.multicam_mode);
     dst_cfg["odometry_mode"] = ToUnderlying(cfg.odometry_mode);
-    // dst_cfg["enable_localization_n_mapping"] = cfg.enable_localization_n_mapping;
     dst_cfg["rgbd_settings"]["depth_scale_factor"] = cfg.rgbd_settings.depth_scale_factor;
+    dst_cfg["rgbd_settings"]["depth_camera_id"] = cfg.rgbd_settings.depth_camera_id;
     dst_cfg["rgbd_settings"]["enable_depth_stereo_tracking"] = cfg.rgbd_settings.enable_depth_stereo_tracking;
+    if (cfg.odometry_mode == Odometry::OdometryMode::Inertial && !rig.imus.empty()) {
+      dst_cfg["imu"]["gyroscope_noise_density"] = rig.imus[0].gyroscope_noise_density;
+      dst_cfg["imu"]["gyroscope_random_walk"] = rig.imus[0].gyroscope_random_walk;
+      dst_cfg["imu"]["accelerometer_noise_density"] = rig.imus[0].accelerometer_noise_density;
+      dst_cfg["imu"]["accelerometer_random_walk"] = rig.imus[0].accelerometer_random_walk;
+      dst_cfg["imu"]["frequency"] = rig.imus[0].frequency;
+    }
   }
   {
     root[1]["frame_metadata"] = "frame_metadata.jsonl";

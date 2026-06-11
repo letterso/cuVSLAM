@@ -14,6 +14,28 @@
 
 cmake_minimum_required(VERSION 3.19)
 
+# Default to building for all CUDA architectures.
+# On CMake < 3.23, "all" is not a valid CUDA_ARCHITECTURES value, so we fall back to
+# passing -arch=all directly to nvcc via CUVSLAM_CUDA_ARCH_ALL.
+# User override: -DCMAKE_CUDA_ARCHITECTURES=<arch> automatically disables the fallback.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.23")
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES "all" CACHE STRING "CUDA architectures to compile for (e.g. 87, 86, all)")
+  endif()
+else()
+  # CMake < 3.23: detect whether user explicitly passed CMAKE_CUDA_ARCHITECTURES.
+  # On first configure it won't be defined at all. On reconfigures it's in the cache
+  # (type STRING, set by cmake). User -D flags arrive with type UNINITIALIZED.
+  get_property(_cuda_arch_type CACHE CMAKE_CUDA_ARCHITECTURES PROPERTY TYPE)
+  if(_cuda_arch_type STREQUAL "UNINITIALIZED")
+    # User explicitly passed -DCMAKE_CUDA_ARCHITECTURES=<arch>
+    set(CUVSLAM_CUDA_ARCH_ALL FALSE)
+  else()
+    # Not set by user — use -arch=all fallback
+    set(CUVSLAM_CUDA_ARCH_ALL TRUE)
+  endif()
+endif()
+
 project(cuVSLAM)
 
 if (CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)

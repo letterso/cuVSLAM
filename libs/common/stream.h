@@ -64,7 +64,16 @@ std::ostream& operator<<(std::ostream& stream, const cuvslam::Isometry3T& pose) 
   const auto [format, ros_conversion] = PoseIOManip::getSettings(stream);
   cuvslam::Isometry3T iso_pose(pose);
   if (ros_conversion) {
-    iso_pose = kRosFromCuvslam * iso_pose * kCuvslamFromRos;
+    // Poses from the public API are in OpenCV coordinates (x-right, y-down, z-forward).
+    // Convert to ROS coordinates (x-forward, y-left, z-up).
+    // ROS_x = OpenCV_z, ROS_y = -OpenCV_x, ROS_z = -OpenCV_y
+    static const Isometry3T kRosFromOpencv = [] {
+      Isometry3T t = Isometry3T::Identity();
+      t.linear() << 0, 0, 1, -1, 0, 0, 0, -1, 0;
+      return t;
+    }();
+    static const Isometry3T kOpencvFromRos{kRosFromOpencv.inverse()};
+    iso_pose = kRosFromOpencv * iso_pose * kOpencvFromRos;
   }
   if (format == PoseFormat::MATRIX) {
     auto t = iso_pose.translation();

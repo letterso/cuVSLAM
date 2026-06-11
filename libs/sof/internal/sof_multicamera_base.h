@@ -40,8 +40,8 @@ public:
 
   bool trackNextFrame(const Sources& curr_sources, Images& curr_images, const Images& prev_images,
                       const Sources& masks_sources, const Isometry3T& predicted_world_from_rig,
-                      std::unordered_map<CameraId, std::vector<camera::Observation>>& observations,
-                      FrameState& state) final;
+                      std::unordered_map<CameraId, std::vector<camera::Observation>>& observations, FrameState& state,
+                      const odom::TrackPerFrameSettings& per_frame) final;
 
   void reset_keyframe_selector() override;
 
@@ -59,7 +59,8 @@ protected:
   };
   using MulticamTracksVector = std::vector<TracksVectorAndCam>;
 
-  bool is_keyframe(const MulticamTracksVector& tracks, const int64_t current_timestamp_ns);
+  bool is_keyframe(const MulticamTracksVector& tracks, const int64_t current_timestamp_ns,
+                   const odom::KeyFrameSettings& kf_settings);
 
   camera::Rig rig_;
   camera::FrustumIntersectionGraph fid_;

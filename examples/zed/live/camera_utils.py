@@ -21,7 +21,7 @@ from scipy.spatial.transform import Rotation
 import cuvslam as vslam
 
 # Constants
-DEFAULT_RESOLUTION = (640, 480)
+DEFAULT_RESOLUTION = sl.RESOLUTION.AUTO
 DEFAULT_FPS = 30
 DEFAULT_IMU_FREQUENCY = 200
 
@@ -174,7 +174,7 @@ def get_zed_stereo_rig(
 
 
 def setup_zed_camera(
-    resolution: Tuple[int, int] = DEFAULT_RESOLUTION,
+    resolution: sl.RESOLUTION = DEFAULT_RESOLUTION,
     fps: int = DEFAULT_FPS,
     depth_mode = sl.DEPTH_MODE.NONE,
     depth_units = sl.UNIT.MILLIMETER
@@ -182,9 +182,13 @@ def setup_zed_camera(
     """Set up and configure a ZED camera.
 
     Args:
-        resolution: Camera resolution as (width, height)
-        fps: Frames per second
+        resolution: sl.RESOLUTION value. Defaults to sl.RESOLUTION.AUTO,
+            which selects the camera's native default (HD720 on USB ZED,
+            HD1200 on ZED X).
+        fps: Frames per second. The SDK clamps to the highest supported value
+            for the chosen resolution if unsupported.
         depth_mode: Depth mode for the camera
+        depth_units: Units for depth values when depth_mode is enabled
 
     Returns:
         Tuple of (camera, camera_info)
@@ -194,16 +198,11 @@ def setup_zed_camera(
 
     # Create a InitParameters object and set configuration parameters
     init_params = sl.InitParameters()
+    init_params.camera_resolution = resolution
     init_params.camera_fps = fps
     init_params.depth_mode = depth_mode
     if depth_mode != sl.DEPTH_MODE.NONE:
         init_params.coordinate_units = depth_units
-
-    # Set resolution
-    if resolution == (640, 480):
-        init_params.camera_resolution = sl.RESOLUTION.VGA
-    elif resolution == (1280, 720):
-        init_params.camera_resolution = sl.RESOLUTION.HD720
 
     # Open the camera
     status = zed.open(init_params)

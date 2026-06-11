@@ -22,7 +22,6 @@
 #include "slam/map/map.h"
 #include "slam/slam/slam.h"
 #include "slam/view/view_landmarks.h"
-#include "slam/view/view_localizer_probes.h"
 #include "slam/view/view_pose_graph.h"
 
 namespace cuvslam::slam {
@@ -33,6 +32,4 @@ void PublishLandmarksToView(const Map& map, int64_t timestamp_ns,
                             ViewLandmarks& view);
 void PublishPoseGraphToView(const Map& map, int64_t timestamp_ns, ViewPoseGraph& view);
 void PublishLoopClosureToView(const Map& map, const std::vector<LandmarkInSolver>& landmarks, ViewLandmarks& view);
-void PublishLocalizerProbesToView(const Map& map, int64_t timestamp_ns, const std::vector<ViewLocalizerProbe>& probes,
-                                  ViewLocalizerProbes& view);
 }  // namespace cuvslam::slam

@@ -53,10 +53,10 @@ struct Camera {
 
 struct IMU {
   Isometry3T transform = Isometry3T::Identity();
-  std::vector<float> g = {0.0f, -9.81f, 0.0f};
+  std::vector<float> g = {0.0f, 9.81f, 0.0f};
   std::string imu_log_path_ = "";
-  CoordinateSystem coordinate_system = CoordinateSystem::CUVSLAM;  // default is CUVSLAM
-  float accelerometer_noise_density = 0.002;                       // default is euroc imu noise params
+  CoordinateSystem coordinate_system = CoordinateSystem::OPENCV;  // raw IMU body frame needs no re-axis
+  float accelerometer_noise_density = 0.002;                      // default is euroc imu noise params
   float accelerometer_random_walk = 0.003;
   float gyroscope_noise_density = 0.00016968;
   float gyroscope_random_walk = 0.000019393;

@@ -46,6 +46,9 @@ struct StereoPnPInput {
 
   float translation_constraint = 1e5f;
   float robustifier_scale_tr = 1.f;
+  float imu_penalty = 1.0;
+
+  bool freeze_bias = false;  // If true, do not update gyro/acc bias in PnP (let SBA handle it)
 
   std::vector<float> outlier_thresh = {10.f, 5.f, 5.f, 5.f};
 };

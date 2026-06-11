@@ -145,14 +145,31 @@ make -j
       ```
    2. Update SRC & DST paths in `build_release.sh`
 
-### Build on remote ARM
+### Build on Jetson (aarch64)
 
-Requires SSH access to the remote device.
+JetPack only ships CUDA runtime libraries by default. Install the dev packages on the Jetson before building:
+```bash
+# JetPack 6.x (CUDA 12)
+sudo apt-get install libcublas-dev-12-6 libcusolver-dev-12-6
+# JetPack 7.x (CUDA 13)
+sudo apt-get install libcublas-dev-13-0 libcusolver-dev-13-0
+```
 
+For building natively, follow the same steps as [Build on local x86](#build-on-local-x86).
+For building remotely via SSH:
 ```bash
 ./copy_to_remote.sh <jetson-host>
-ssh <jetson-host> 'export CUVSLAM_SRC_DIR=~/cuvslam/src CUVSLAM_DST_DIR=~/cuvslam/build && ~/cuvslam/src/build_release.sh'
+ssh <jetson-host> 'export CUVSLAM_SRC_DIR=~/cuvslam/src CUVSLAM_DST_DIR=~/cuvslam/build && ~/cuvslam/src/build_release.sh [options]'
 ./copy_from_remote.sh <jetson-host>
+```
+
+To speed up the build, target your specific GPU architecture instead of building for all, e.g.:
+```bash
+./build_release.sh --cuda_arch=87   # 87 for Orin Nano/NX/AGX
+```
+Omit `--cuda_arch` to build for all architectures (default). To detect your GPU's SM version:
+```bash
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader   # e.g. 8.7 -> use 87
 ```
 
 ### Enable rerun visualizer for C++ code
@@ -174,6 +191,7 @@ ssh <jetson-host> 'export CUVSLAM_SRC_DIR=~/cuvslam/src CUVSLAM_DST_DIR=~/cuvsla
 
 **A**: Pre-built wheels are available for Python 3.10 (Ubuntu 22.04) and Python 3.12 or later (Ubuntu 24.04+).
 When built from source, PyCuVSLAM supports Python 3.9 and later.
+
 
 # Troubleshooting
 

@@ -24,7 +24,6 @@
 #include "common/coordinate_system.h"
 #include "common/log.h"
 #include "launcher/visualizer.h"
-#include "pipelines/visualizer.h"
 #include "visualizer/visualizer.hpp"
 
 namespace cuvslam::launcher {
@@ -34,6 +33,9 @@ void setupFrameTimeline(const Metas& meta) {
   size_t frame_id = meta.at(0).frame_id;
   int64_t timestamp = meta.at(0).timestamp;
   visualizer.setupTimeline(frame_id, timestamp);
+
+  // Set coordinate system (right-hand, Y-down, Z-forward)
+  visualizer.getRecordingStream().log_static("world", rerun::ViewCoordinates::RIGHT_HAND_Y_DOWN);
 }
 
 void logCameraImages(const Metas& meta, const Sources& images, const std::vector<CameraId>& cam_ids,

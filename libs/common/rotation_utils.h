@@ -36,26 +36,19 @@ template <typename Scalar, int Dim>
 EIGEN_DEVICE_FUNC Eigen::Matrix<Scalar, Dim, Dim> CalculateRotationFromSVD(
     const Eigen::Matrix<Scalar, Dim, Dim>& transform_matrix) {
   using MatrixType = Eigen::Matrix<Scalar, Dim, Dim>;
-  using VectorType = Eigen::Matrix<Scalar, Dim, 1>;
 
   // Perform SVD decomposition
   Eigen::JacobiSVD<MatrixType> svd(transform_matrix, Eigen::ComputeFullU | Eigen::ComputeFullV);
 
-  // Calculate the determinant of U * V^T to ensure proper rotation matrix
-  Scalar x = (svd.matrixU() * svd.matrixV().adjoint()).determinant();
-
-  // Get singular values
-  VectorType sv = svd.singularValues();
-
-  // Adjust the first singular value to ensure proper rotation
-  sv.coeffRef(0) *= x;
-
-  // Construct the rotation matrix
-  MatrixType m = svd.matrixU();
-  m.col(0) /= x;
-
-  // Return the rotation matrix: U * V^T
-  return m * svd.matrixV().adjoint();
+  // U * V^T is the closest orthogonal matrix, but may have det = -1 (reflection).
+  // When that happens, negating U's last column (smallest singular value) yields
+  // the closest proper rotation -- equivalent to subtracting 2 * u_last * v_last^T
+  // from U * V^T, which avoids a second full matmul.
+  MatrixType uvt = svd.matrixU() * svd.matrixV().adjoint();
+  if (uvt.determinant() < Scalar(0)) {
+    uvt -= Scalar(2) * svd.matrixU().col(Dim - 1) * svd.matrixV().col(Dim - 1).adjoint();
+  }
+  return uvt;
 }
 
 /**

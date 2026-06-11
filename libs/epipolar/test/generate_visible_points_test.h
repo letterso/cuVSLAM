@@ -50,7 +50,7 @@ inline void generateVisiblePoints(const Isometry3TVector& cameras, size_t num3DP
 
   auto validator = [&](const Vector3T& p) -> bool {
     for (const auto& cam : cameras) {
-      if ((cam.inverse() * p).z() >= cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER) {
+      if ((cam.inverse() * p).z() <= cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER) {
         return false;
       }
     }
@@ -77,7 +77,7 @@ inline void generateVisiblePoints(const Isometry3TVector& cameras, size_t num3DP
       points2D[k].clear();
     }
 
-    Vector3TVector points3D = utils::GeneratePointsInCube(num3DPoints, points3DMinRange, points3DMaxRange, validator);
+    Vector3TVector points3D = GeneratePointsInCube(num3DPoints, points3DMinRange, points3DMaxRange, validator);
 
     if (points3D.size() == 0) {
       TraceMessage("Failed to generate points in given cube with given cameras");

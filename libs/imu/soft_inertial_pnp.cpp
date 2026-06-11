@@ -18,6 +18,7 @@
 #include "imu/soft_inertial_pnp.h"
 
 #include "common/imu_calibration.h"
+#include "common/log.h"
 #include "math/robust_cost_function.h"
 #include "math/twist.h"
 
@@ -92,7 +93,7 @@ void CalcOutliers(const imu::ImuCalibration& imu_calibration, const StereoPnPInp
 
     p_c = cam_from_w[camera_idx] * p_w;
 
-    if (p_c.z() < -1.f) {
+    if (p_c.z() > 1.f) {
       r = p_c.topRows(2) / p_c.z() - input.observation_xys[obs];
       float err = r.dot(input.observation_infos[obs] * r);
       is_obs_outlier[obs] = err > thresh;
@@ -111,8 +112,6 @@ float EvaluateCost(const imu::ImuCalibration& imu_calibration, const StereoPnPIn
 
   const auto& calib = imu_calibration;
   const Isometry3T& rig_from_imu = calib.rig_from_imu();
-
-  int num_skipped = 0;
 
   const sba_imu::IMUPreintegration& preint = pose_left.preintegration;
 
@@ -151,11 +150,9 @@ float EvaluateCost(const imu::ImuCalibration& imu_calibration, const StereoPnPIn
 
     p_c = input.rig.camera_from_rig[camera_idx] * rig_from_imu * pu2.w_from_imu.inverse() * p_w;
 
-    if (p_c.z() < -1.f) {
+    if (p_c.z() > 1.f) {
       r = p_c.topRows(2) / p_c.z() - input.observation_xys[obs];
       cost += ROBUST_COST(r.dot(input.observation_infos[obs] * r), input.robustifier_scale);
-    } else {
-      ++num_skipped;
     }
   }
 
@@ -234,6 +231,7 @@ float EvaluateCost(const imu::ImuCalibration& imu_calibration, const StereoPnPIn
     cost += ROBUST_COST(tr_constraint.dot(tr_constraint_info * tr_constraint), input.robustifier_scale_tr);
     cost += ROBUST_COST(left_pose_err.dot(original_pose_left.info * left_pose_err), input.robustifier_scale_pose);
   }
+
   return cost;
 }
 
@@ -264,7 +262,7 @@ void build_hessian(const imu::ImuCalibration& imu_calibration, const StereoPnPIn
     const Isometry3T& w_from_imu = pose_right.w_from_imu;
     Vector3T p_c = problem.rig.camera_from_rig[camera_idx] * rig_from_imu * w_from_imu.inverse() * p_w;
 
-    if (p_c.z() < -1.f) {
+    if (p_c.z() > 1.f) {
       Vector2T prediction = p_c.topRows(2) / p_c.z();
       Vector2T r = prediction - problem.observation_xys[obs];
 
@@ -691,6 +689,8 @@ bool solve_inertial_pnp(const imu::ImuCalibration& imu_calibration, const Stereo
   auto initial_cost = EvaluateCost(imu_calibration, problem, is_obs_outlier, original_prev_pose, prev_pose, pose,
                                    left_update, right_update, imu_info_penalty);
 
+  TraceMessage("PnP: initial_cost=%.2f", initial_cost);
+
   if (initial_cost < 10.f) {
     // Nothing to minimize. We have a "pendulum" effect on still frames otherwise.
     prev_pose = original_prev_pose;
@@ -702,6 +702,18 @@ bool solve_inertial_pnp(const imu::ImuCalibration& imu_calibration, const Stereo
 
   build_hessian(imu_calibration, problem, is_obs_outlier, original_prev_pose, prev_pose, pose, imu_info_penalty,
                 hessian, negative_gradient);
+
+  // Freeze bias DOFs: zero off-diagonal coupling and set large diagonal to lock them
+  if (problem.freeze_bias) {
+    // Bias indices: left gyro[9-11], left acc[12-14], right gyro[24-26], right acc[27-29]
+    const int bias_indices[] = {9, 10, 11, 12, 13, 14, 24, 25, 26, 27, 28, 29};
+    for (int idx : bias_indices) {
+      hessian.row(idx).setZero();
+      hessian.col(idx).setZero();
+      hessian(idx, idx) = 1e10f;
+      negative_gradient(idx) = 0.f;
+    }
+  }
 
   Vec30 scaling = hessian.diagonal();
 
@@ -775,6 +787,15 @@ bool solve_inertial_pnp(const imu::ImuCalibration& imu_calibration, const Stereo
       current_cost = cost;
       build_hessian(imu_calibration, problem, is_obs_outlier, original_prev_pose, prev_pose, pose, imu_info_penalty,
                     hessian, negative_gradient);
+      if (problem.freeze_bias) {
+        const int bias_indices[] = {9, 10, 11, 12, 13, 14, 24, 25, 26, 27, 28, 29};
+        for (int idx : bias_indices) {
+          hessian.row(idx).setZero();
+          hessian.col(idx).setZero();
+          hessian(idx, idx) = 1e10f;
+          negative_gradient(idx) = 0.f;
+        }
+      }
       scaling = scaling.cwiseMax(hessian.diagonal());
 
       pose.info = Marginalize(hessian);
@@ -783,7 +804,11 @@ bool solve_inertial_pnp(const imu::ImuCalibration& imu_calibration, const Stereo
       lambda *= 2.f;
     }
   } while (num_iterations < max_iterations);
-  // std::cout << "curr = " << current_cost << ", init = " << initial_cost << std::endl;
+  auto dt_prev = (prev_pose.w_from_imu.translation() - original_prev_pose.w_from_imu.translation()).eval();
+  auto dt_curr = (pose.w_from_imu.translation() - original_pose.w_from_imu.translation()).eval();
+  TraceMessage("PnP: iters=%d initial=%.2f final=%.2f dt_prev=[%.4f,%.4f,%.4f] dt_curr=[%.4f,%.4f,%.4f]",
+               num_iterations, initial_cost, current_cost, dt_prev.x(), dt_prev.y(), dt_prev.z(), dt_curr.x(),
+               dt_curr.y(), dt_curr.z());
   const bool result = current_cost < initial_cost;
   if (!result) {
     prev_pose = original_prev_pose;

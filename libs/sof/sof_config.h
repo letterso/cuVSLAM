@@ -25,7 +25,7 @@
 #include "camera/frustum_intersection_graph.h"
 
 #include "sof/selector_stereo.h"
-#include "sof/sof_mono_interface.h"
+#include "sof/sof.h"
 
 namespace cuvslam::sof {
 
@@ -44,10 +44,10 @@ struct Settings {
 
   bool ransac_filter = false;
 
-  std::string tracker = "lk";
+  TrackerType tracker = TrackerType::LK;
 
   // left-to-right tracker (stereo only)
-  std::string lr_tracker = "lk";
+  TrackerType lr_tracker = TrackerType::LK;
 
   SelectorStereoSettings feature_selection_settings;
 
@@ -55,10 +55,11 @@ struct Settings {
   camera::MulticamManualSetup multicam_setup;
 };
 
-camera::MulticameraMode ParseMulticameraMode(const std::string& mode,
-                                             camera::MulticameraMode default_mode = camera::MulticameraMode::Moderate);
-
 void OverrideMulticameraSettings(Settings& settings, const std::optional<camera::MulticameraMode>& multicam_mode,
                                  const camera::MulticamManualSetup& multicam_setup);
 
 }  // namespace cuvslam::sof
+
+// Included after Settings is fully defined to break the circular dependency
+// with sof_mono_interface.h (which uses Settings in its function signatures).
+#include "sof/sof_mono_interface.h"

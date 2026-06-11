@@ -36,12 +36,6 @@ std::shared_ptr<PoseGraphHypothesis> PoseGraphHypothesis::MakeCopy() const {
   return cpy;
 }
 
-void PoseGraphHypothesis::MakeCopy(PoseGraphHypothesis& pgh) const {
-  if (this != &pgh) {
-    pgh.pose_graph_verts_ = this->pose_graph_verts_;
-  }
-}
-
 void PoseGraphHypothesis::PutToDatabase(ISlamDatabase* database) const {
   uint64_t sz0 = pose_graph_verts_.size();
   uint64_t sz = this->format_and_version_.size();
@@ -84,32 +78,6 @@ bool PoseGraphHypothesis::GetFromDatabase(ISlamDatabase* database) {
 
 void PoseGraphHypothesis::CopyTo(PoseGraphHypothesis& pose_graph_hypothesis_dst) const {
   pose_graph_hypothesis_dst.pose_graph_verts_ = this->pose_graph_verts_;
-}
-
-// methods for merge pose graphs hypothesis:
-bool PoseGraphHypothesis::Reindex(const std::map<KeyFrameId, KeyFrameId>& keyframe_id_remap) {
-  std::map<KeyFrameId, Isometry3T> pose_graph_verts;
-  for (auto& it : keyframe_id_remap) {
-    auto it_v = this->pose_graph_verts_.find(it.first);
-    if (it_v == this->pose_graph_verts_.end()) {
-      // all keys in keyframe_id_remap have to been in the this->pose_graph_verts_
-      return false;
-    }
-    pose_graph_verts[it.second] = it_v->second;
-  }
-
-  pose_graph_verts_ = pose_graph_verts;
-  return true;
-}
-bool PoseGraphHypothesis::Union(const PoseGraphHypothesis& const_pgh) {
-  // copy all from const_pose_graph to this
-  for (auto& it : const_pgh.pose_graph_verts_) {
-    if (this->pose_graph_verts_.find(it.first) != this->pose_graph_verts_.end()) {
-      return false;
-    }
-    this->pose_graph_verts_[it.first] = it.second;
-  }
-  return true;
 }
 
 void PoseGraphHypothesis::swap(PoseGraphHypothesis& to_swap) noexcept {

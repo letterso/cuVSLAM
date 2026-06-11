@@ -31,7 +31,9 @@ RerunVisualizer& RerunVisualizer::getInstance() {
 
 RerunVisualizer::RerunVisualizer() {
   recording_.spawn().exit_on_failure();
-  recording_.log("world", rerun::archetypes::ViewCoordinates::RIGHT_HAND_Y_UP);  // switch to cuVSLAM coordinate system
+  recording_.log(
+      "world",
+      rerun::archetypes::ViewCoordinates::RIGHT_HAND_Y_DOWN);  // OpenCV-style world (x right, y down, z forward)
 }
 
 RerunVisualizer::~RerunVisualizer() {

@@ -71,27 +71,22 @@ __device__ void reduce(T& x) {
 
 __device__ bool magic_depth(float3 lm_world, const ImgTextures& tex, const Inctinsics& intrinsics,
                             const Extrinsics& extr, Matf16& J, float& residual) {
-  // Transform landmark to camera frame (OpenCV convention: +z forward)
   float3 lm_cam;
   Transform(extr.cam_from_world, lm_world, lm_cam);
-  // convert lm_cam to cuvslam coordinate system: flip Y and Z axes
-  // M = diag(1, -1, -1, 1) transforms from cuvslam to opencv convention
-  float3 lm_cam_opencv = {lm_cam.x, -lm_cam.y, -lm_cam.z};
 
-  if (lm_cam_opencv.z < D_MIN) {
+  if (lm_cam.z < D_MIN) {
     return false;
   }
 
-  float inv_z_opencv = __fdividef(1.f, lm_cam_opencv.z);
-  // convert lm_cam_opencv to image frame
-  float2 tau{intrinsics.focal_x * lm_cam_opencv.x * inv_z_opencv + intrinsics.principal_x,
-             intrinsics.focal_y * lm_cam_opencv.y * inv_z_opencv + intrinsics.principal_y};
+  float inv_z = __fdividef(1.f, lm_cam.z);
+  float inv_z_sq = inv_z * inv_z;
+  float2 tau{intrinsics.focal_x * lm_cam.x * inv_z + intrinsics.principal_x,
+             intrinsics.focal_y * lm_cam.y * inv_z + intrinsics.principal_y};
 
   if (tau.x < 1 || tau.x >= intrinsics.size_x - 1 || tau.y < 1 || tau.y >= intrinsics.size_y - 1) {
     return false;
   }
 
-  // Sample depth values for gradient computation
   float dpatch[9];
   for (int i = 0; i < 3; i++) {
     for (int j = 0; j < 3; j++) {
@@ -108,48 +103,36 @@ __device__ bool magic_depth(float3 lm_world, const ImgTextures& tex, const Incti
   float dgx = (dpatch[2] - dpatch[0] + 2 * (dpatch[5] - dpatch[3]) + dpatch[8] - dpatch[6]) * 0.25f;
   float dgy = (dpatch[6] - dpatch[0] + 2 * (dpatch[7] - dpatch[1]) + dpatch[8] - dpatch[2]) * 0.25f;
 
-  // Check for outliers
-  if (abs(dgx) > GRAD_THRESH || abs(dgy) > GRAD_THRESH || abs(dc + lm_cam.z) > RESIDUAL_MAX) {
+  if (abs(dgx) > GRAD_THRESH || abs(dgy) > GRAD_THRESH || abs(lm_cam.z - dc) > RESIDUAL_MAX) {
     return false;
   }
 
-  // printf("dc = (%f, %f, %f, %f, %f)\n", dc, dleft, dright, dtop, dbottom);
+  residual = lm_cam.z - dc;
 
-  residual = lm_cam.z + dc;  // depth residual
+  float ddc_dx = dgx * intrinsics.focal_x * inv_z;
+  float ddc_dy = dgy * intrinsics.focal_y * inv_z;
+  float ddc_dz = dgx * (-intrinsics.focal_x * lm_cam.x * inv_z_sq) + dgy * (-intrinsics.focal_y * lm_cam.y * inv_z_sq);
 
-  float inv_z = __fdividef(1.f, lm_cam.z);
-  float inv_z_sq = inv_z * inv_z;
-  // J = [a b c] * R_cam_from_world * point_jacobian(lm_world)
-  // where point_jacobian(p) = [-[p]_× | I]
+  float a = -ddc_dx;
+  float b = -ddc_dy;
+  float c = 1.f - ddc_dz;
+
   const auto& R = extr.cam_from_world;
-  {
-    float a, b, c;
+  J.d_[0][0] = a * (R.d_[0][2] * lm_world.y - R.d_[0][1] * lm_world.z) +
+               b * (R.d_[1][2] * lm_world.y - R.d_[1][1] * lm_world.z) +
+               c * (R.d_[2][2] * lm_world.y - R.d_[2][1] * lm_world.z);
 
-    {
-      // Depth gradient coefficients for chain rule
-      a = -intrinsics.focal_x * dgx * inv_z;
-      b = intrinsics.focal_y * dgy * inv_z;
-      c = ((lm_cam.x * intrinsics.focal_x * dgx - lm_cam.y * intrinsics.focal_y * dgy) * inv_z_sq + 1.f);
-    }
+  J.d_[0][1] = a * (R.d_[0][0] * lm_world.z - R.d_[0][2] * lm_world.x) +
+               b * (R.d_[1][0] * lm_world.z - R.d_[1][2] * lm_world.x) +
+               c * (R.d_[2][0] * lm_world.z - R.d_[2][2] * lm_world.x);
 
-    // Rotation part: [a b c] * R * (-[lm_world]_×)
-    J.d_[0][0] = a * (R.d_[0][2] * lm_world.y - R.d_[0][1] * lm_world.z) +
-                 b * (R.d_[1][2] * lm_world.y - R.d_[1][1] * lm_world.z) +
-                 c * (R.d_[2][2] * lm_world.y - R.d_[2][1] * lm_world.z);
+  J.d_[0][2] = a * (R.d_[0][1] * lm_world.x - R.d_[0][0] * lm_world.y) +
+               b * (R.d_[1][1] * lm_world.x - R.d_[1][0] * lm_world.y) +
+               c * (R.d_[2][1] * lm_world.x - R.d_[2][0] * lm_world.y);
 
-    J.d_[0][1] = a * (R.d_[0][0] * lm_world.z - R.d_[0][2] * lm_world.x) +
-                 b * (R.d_[1][0] * lm_world.z - R.d_[1][2] * lm_world.x) +
-                 c * (R.d_[2][0] * lm_world.z - R.d_[2][2] * lm_world.x);
-
-    J.d_[0][2] = a * (R.d_[0][1] * lm_world.x - R.d_[0][0] * lm_world.y) +
-                 b * (R.d_[1][1] * lm_world.x - R.d_[1][0] * lm_world.y) +
-                 c * (R.d_[2][1] * lm_world.x - R.d_[2][0] * lm_world.y);
-
-    // Translation part: [a b c] * R
-    J.d_[0][3] = a * R.d_[0][0] + b * R.d_[1][0] + c * R.d_[2][0];
-    J.d_[0][4] = a * R.d_[0][1] + b * R.d_[1][1] + c * R.d_[2][1];
-    J.d_[0][5] = a * R.d_[0][2] + b * R.d_[1][2] + c * R.d_[2][2];
-  }
+  J.d_[0][3] = a * R.d_[0][0] + b * R.d_[1][0] + c * R.d_[2][0];
+  J.d_[0][4] = a * R.d_[0][1] + b * R.d_[1][1] + c * R.d_[2][1];
+  J.d_[0][5] = a * R.d_[0][2] + b * R.d_[1][2] + c * R.d_[2][2];
   return true;
 }
 
@@ -335,15 +318,11 @@ __device__ bool magic_points(const Track& track, const ImgTextures& tex, const I
   if (z < D_MIN || z > D_MAX) {
     return false;
   }
-  z = -z;
 
-  // Unproject observation to 3D in cuVSLAM camera frame (negative z forward)
-  float3 obs_cam = {-track.obs_xy.x * z, track.obs_xy.y * z, z};
+  float3 obs_cam = {track.obs_xy.x * z, track.obs_xy.y * z, z};
 
-  // transform landmark to camera frame (cuVSLAM convention)
   float3 lm_cam;
   Transform(extr.cam_from_world, track.lm_xyz, lm_cam);
-  // calculate residual: lm_cam - obs_cam (both in cuVSLAM convention)
   residual = {lm_cam.x - obs_cam.x, lm_cam.y - obs_cam.y, lm_cam.z - obs_cam.z};
   // J = T_cam_from_world.linear() * point_jacobian(lm_world)
   // where point_jacobian(p) = [-[p]_× | I]
@@ -578,7 +557,7 @@ __global__ void lift_kernel(cudaTextureObject_t curr_depth, Inctinsics intrinsic
 
   z /= num;
 
-  landmarks[x] = {track.obs_xy.x * z, -track.obs_xy.y * z, -z};
+  landmarks[x] = {track.obs_xy.x * z, track.obs_xy.y * z, z};
 }
 
 }  // namespace cuvslam::cuda::matcher

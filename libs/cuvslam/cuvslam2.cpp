@@ -20,7 +20,6 @@
 #include <algorithm>
 #include <stdexcept>
 
-#include "common/coordinate_system.h"
 #include "common/error.h"
 #include "common/isometry.h"
 #include "math/twist_to_angle.h"
@@ -30,9 +29,7 @@
 #include "odometry/rgbd_odometry.h"
 #include "odometry/stereo_inertial_odometry.h"
 #include "odometry/svo_config.h"
-#include "slam/async_localizer/async_localizer.h"
 #include "slam/async_slam/async_slam.h"
-#include "slam/merge_map/merge_dbs.h"
 
 #include "cuvslam/debug_dump.h"
 #include "cuvslam/internal.h"
@@ -41,21 +38,21 @@ namespace cuvslam {
 
 namespace {
 
-// Convert translation vector from cuVSLAM to OpenCV coordinate system
-Vector3f OpencvFromCuvslam(const Vector3T& cuvslam_vec) {
-  return Vector3f{cuvslam_vec.x(), -cuvslam_vec.y(), -cuvslam_vec.z()};
-}
-
-Vector3T CuvslamFromOpencv(const Vector3T& opencv_vec) {
-  return Vector3T{opencv_vec.x(), -opencv_vec.y(), -opencv_vec.z()};
-}
-
-Vector3f OpencvFromCuvslam(const Vector3f& cuvslam_vec) {
-  return Vector3f{cuvslam_vec[0], -cuvslam_vec[1], -cuvslam_vec[2]};
-}
-
-Vector3T CuvslamFromOpencv(const Vector3f& opencv_vec) {
-  return Vector3T{opencv_vec[0], -opencv_vec[1], -opencv_vec[2]};
+// Builds a TrackPerFrameSettings from per-frame options. TrackOptions always carries concrete
+// values; pass TrackOptions{} to use all defaults. Add new per-frame categories to
+// TrackPerFrameSettings rather than adding parameters here or to track().
+odom::TrackPerFrameSettings BuildTrackFrameSettings(const Odometry::TrackOptions& options) {
+  odom::TrackPerFrameSettings result;
+  result.sof.num_desired_tracks = options.num_desired_tracks;
+  result.sof.border_top = options.border_top;
+  result.sof.border_bottom = options.border_bottom;
+  result.sof.border_left = options.border_left;
+  result.sof.border_right = options.border_right;
+  result.sof.box3_prefilter = options.box3_prefilter;
+  result.sof.ransac_filter = options.ransac_filter;
+  result.kf.survivor_from_last = options.kf_survivor_from_last;
+  result.kf.max_timedelta_between_kfs_s = options.kf_max_timedelta_between_kfs_s;
+  return result;
 }
 
 // TODO(vikuznetsov): Remove camera::MulticameraMode & reuse cuvslam enum? What about Manual mode hidden from
@@ -92,14 +89,10 @@ void CreateCameraModel(const Camera& camera, std::unique_ptr<camera::ICameraMode
   THROW_INVALID_ARG_IF(focal[0] <= 0.0 || focal[1] <= 0.0, "Focal length must be > 0.0");
   THROW_INVALID_ARG_IF(resolution[0] <= 0 || resolution[1] <= 0, "Image width/height must be > 0");
 
-  // TODO(vikuznetsov): use enum in camera::CreateCameraModel
-  const std::string distortion_model = ToString(camera.distortion.model);
-
-  camera_model = camera::CreateCameraModel(resolution, focal, principal, distortion_model,
+  camera_model = camera::CreateCameraModel(resolution, focal, principal, camera.distortion.model,
                                            camera.distortion.parameters.data(), camera.distortion.parameters.size());
-  THROW_INVALID_ARG_IF(!camera_model, "Failed to create camera model for distortion model '" + distortion_model +
-                                          "' with " + std::to_string(camera.distortion.parameters.size()) +
-                                          " parameters");
+  THROW_INVALID_ARG_IF(!camera_model, "Failed to create camera model with " +
+                                          std::to_string(camera.distortion.parameters.size()) + " parameters");
 }
 
 void SetTrackerRigAndIntrinsics(std::vector<std::unique_ptr<camera::ICameraModel>>& cameras_models,
@@ -111,9 +104,7 @@ void SetTrackerRigAndIntrinsics(std::vector<std::unique_ptr<camera::ICameraModel
     CreateCameraModel(cameras[k], cameras_models[k]);
     internal_rig.intrinsics[k] = cameras_models[k].get();
     {
-      // Convert from OpenCV to cuVSLAM coordinate system for input rig_from_camera
-      Isometry3T rig_from_camera = cuvslam::CuvslamFromOpencv(ConvertPoseToIsometry(cameras[k].rig_from_camera));
-
+      const Isometry3T rig_from_camera = ConvertPoseToIsometry(cameras[k].rig_from_camera);
       internal_rig.camera_from_rig[k] = rig_from_camera.inverse();
     }
   }
@@ -303,6 +294,7 @@ public:
   int64_t max_frame_delta_ns;
   int64_t frame_sync_threshold_ns{1'000'000};  // 1 ms
   // settings
+  odom::Settings svo_settings;  // construction-time settings passed to odometry components
   bool imu_fusion_enabled;
   RGBDSettings rgbd_settings;
   Odometry::OdometryMode odometry_mode;
@@ -338,8 +330,7 @@ public:
     landmarks.clear();
     landmarks.reserve(stat->tracks3d.size());
     for (const auto& t : stat->tracks3d) {
-      // Convert from cuVSLAM to OpenCV coordinate system
-      landmarks.emplace_back(Landmark{t.first, OpencvFromCuvslam(t.second)});
+      landmarks.emplace_back(Landmark{t.first, {{t.second.x(), t.second.y(), t.second.z()}}});
     }
   }
 };
@@ -377,7 +368,7 @@ Odometry::Odometry(const Rig& rig, const Config& cfg) {
   svo_settings.sof_settings.box3_prefilter = cfg.use_denoising;
   if (cfg.rectified_stereo_camera) {
     CheckRectifiedStereoCamera(rig);
-    svo_settings.sof_settings.lr_tracker = "lk_horizontal";
+    svo_settings.sof_settings.lr_tracker = sof::TrackerType::LKHorizontal;
   }
 
   auto tracker{std::make_unique<Odometry::Impl>()};
@@ -404,15 +395,15 @@ Odometry::Odometry(const Rig& rig, const Config& cfg) {
     case OdometryMode::Inertial: {
       const auto& imu_calibration = rig.imus[0];
       CheckImuCalibration(imu_calibration);
-      // Convert from OpenCV to cuVSLAM coordinate system for input rig_from_imu
-      Isometry3T rig_from_imu = CuvslamFromOpencv(ConvertPoseToIsometry(imu_calibration.rig_from_imu));
+      const Isometry3T rig_from_imu = ConvertPoseToIsometry(imu_calibration.rig_from_imu);
       svo_settings.imu_calibration =
           imu::ImuCalibration(rig_from_imu, imu_calibration.gyroscope_noise_density,
                               imu_calibration.gyroscope_random_walk, imu_calibration.accelerometer_noise_density,
                               imu_calibration.accelerometer_random_walk, imu_calibration.frequency);
       svo_settings.use_prediction = cfg.use_motion_model;
       tracker->visual_odometry = std::make_unique<odom::StereoInertialOdometry>(
-          tracker->rig, tracker->fig, svo_settings, cfg.use_gpu, cfg.debug_imu_mode);
+          tracker->rig, tracker->fig, svo_settings, cfg.use_gpu, cfg.debug_imu_mode,
+          /*disable_fusion_except_gravity=*/true);
       break;
     }
     case OdometryMode::Mono: {
@@ -433,6 +424,7 @@ Odometry::Odometry(const Rig& rig, const Config& cfg) {
                                         cfg.enable_final_landmarks_export);
   tracker->enable_final_landmarks_export = cfg.enable_final_landmarks_export;
 
+  tracker->svo_settings = svo_settings;
   tracker->imu_fusion_enabled = cfg.odometry_mode == OdometryMode::Inertial;
   tracker->debug_dump_directory = cfg.debug_dump_directory;
   tracker->max_frame_delta_ns = static_cast<int64_t>(cfg.max_frame_delta_s * 1e9);
@@ -460,11 +452,14 @@ void Odometry::RegisterImuMeasurement(uint32_t sensor_index, const ImuMeasuremen
   Vector3T acc(imu.linear_accelerations[0], imu.linear_accelerations[1], imu.linear_accelerations[2]);
   Vector3T gyro(imu.angular_velocities[0], imu.angular_velocities[1], imu.angular_velocities[2]);
 
-  const imu::ImuMeasurement m = {imu.timestamp_ns, CuvslamFromOpencv(acc), CuvslamFromOpencv(gyro)};
+  const imu::ImuMeasurement m = {imu.timestamp_ns, acc, gyro};
   static_cast<odom::StereoInertialOdometry*>(impl->visual_odometry.get())->add_imu_measurement(m);
 }
 
-PoseEstimate Odometry::Track(const ImageSet& images, const ImageSet& masks, const ImageSet& depths) {
+PoseEstimate Odometry::Track(const ImageSet& images, const ImageSet& masks, const ImageSet& depths,
+                             const Odometry::TrackOptions& options) {
+  const odom::TrackPerFrameSettings per_frame_setting = BuildTrackFrameSettings(options);
+
   CheckImages(images, impl->frame_sync_threshold_ns, impl->cameras_models);
   if (impl->odometry_mode == OdometryMode::RGBD) {
     CheckDepths(depths, impl->cameras_models);
@@ -532,7 +527,7 @@ PoseEstimate Odometry::Track(const ImageSet& images, const ImageSet& masks, cons
 
   Matrix6T static_info_exp = Matrix6T::Identity();
   bool result = impl->visual_odometry->track(image_sources, depth_sources, cuvslam_images_ptrs, impl->prev_image_ptrs,
-                                             masks_sources, impl->last_delta, static_info_exp);
+                                             masks_sources, impl->last_delta, static_info_exp, per_frame_setting);
 
   for (const auto& [cam_id, img] : cuvslam_images_ptrs) {
     impl->prev_image_ptrs[cam_id] = img;
@@ -543,7 +538,7 @@ PoseEstimate Odometry::Track(const ImageSet& images, const ImageSet& masks, cons
   } else {
     return PoseEstimate{};
   }
-  const Isometry3T internal_pose = impl->prev_abs_pose;  // absolute position in cuVSLAM coordinates
+  const Isometry3T internal_pose = impl->prev_abs_pose;
 
   // static pose covariance in exponential mapping form in WCS
   const Matrix6T static_pose_covariance_exp = static_info_exp.ldlt().solve(Matrix6T::Identity());
@@ -554,8 +549,7 @@ PoseEstimate Odometry::Track(const ImageSet& images, const ImageSet& masks, cons
   PoseEstimate pose_estimate;
   pose_estimate.timestamp_ns = current_time_ns;
   PoseWithCovariance pose_with_covariance;
-  // Convert from cuVSLAM to OpenCV coordinate system for output
-  pose_with_covariance.pose = ConvertIsometryToPose(OpencvFromCuvslam(internal_pose));
+  pose_with_covariance.pose = ConvertIsometryToPose(internal_pose);
   mat<6>(pose_with_covariance.covariance) = static_pose_covariance_euler;
   pose_estimate.world_from_rig = pose_with_covariance;
 
@@ -565,9 +559,8 @@ PoseEstimate Odometry::Track(const ImageSet& images, const ImageSet& masks, cons
 
     for (const auto& t : stat->tracks3d) {
       const TrackId id = t.first;
-      // Transform landmark from cuVSLAM to OpenCV coordinate system
       const Vector3T internal_lm = internal_pose * t.second;
-      impl->final_landmarks[id] = OpencvFromCuvslam(internal_lm);
+      impl->final_landmarks[id] = {{internal_lm.x(), internal_lm.y(), internal_lm.z()}};
     }
   }
 
@@ -596,9 +589,21 @@ std::optional<Odometry::Gravity> Odometry::GetLastGravity() const {
   }
 
   const auto& internal_g = gravity_estimate.value();
-  // Convert from cuVSLAM to OpenCV coordinate system
-  Vector3T opencv_g = kOpencvFromCuvslam.linear() * internal_g;
-  return Gravity{opencv_g.x(), opencv_g.y(), opencv_g.z()};
+  return Gravity{internal_g.x(), internal_g.y(), internal_g.z()};
+}
+
+std::optional<Odometry::ImuState> Odometry::GetImuState() const {
+  THROW_INVALID_ARG_IF(!impl->imu_fusion_enabled, "IMU fusion is disabled");
+
+  const auto s = static_cast<odom::StereoInertialOdometry*>(impl->visual_odometry.get())->GetImuState();
+  if (!s.has_value()) return std::nullopt;
+
+  // Internal coordinate system is now OpenCV — no conversion needed.
+  return ImuState{
+      {s->velocity.x(), s->velocity.y(), s->velocity.z()},
+      {s->gyro_bias.x(), s->gyro_bias.y(), s->gyro_bias.z()},
+      {s->acc_bias.x(), s->acc_bias.y(), s->acc_bias.z()},
+  };
 }
 
 void Odometry::GetState(Odometry::State& state) const {
@@ -606,7 +611,7 @@ void Odometry::GetState(Odometry::State& state) const {
   THROW_INVALID_ARG_IF(stat == nullptr, "Enable export of observations and/or landmarks to get state");
   state.frame_id = impl->frame_id - 1;  // frame_id is incremented after tracking, so we need to subtract 1
   state.timestamp_ns = impl->last_frame_timestamp_ns;
-  state.delta = ConvertIsometryToPose(OpencvFromCuvslam(impl->last_delta));
+  state.delta = ConvertIsometryToPose(impl->last_delta);
   state.keyframe = stat->keyframe;
   state.warming_up = stat->heating;
   state.gravity = impl->imu_fusion_enabled ? GetLastGravity() : std::nullopt;
@@ -634,11 +639,8 @@ public:
   std::vector<std::unique_ptr<camera::ICameraModel>> cameras_models_;
   std::vector<uint8_t> primary_cameras_;
   bool use_gpu_ = true;
-  bool sync_mode_ = false;
   bool gt_align_mode_ = false;
   std::unique_ptr<slam::AsyncSlam> async_slam_;
-  std::unique_ptr<slam::AsyncLocalizer> async_localizer_;
-  LocalizationCallback localizer_response_;
   uint64_t frame_id_ = 0;
 
   // views
@@ -648,8 +650,6 @@ public:
   std::shared_ptr<Landmarks> landmarks_[kMaxDataLayer];
   std::shared_ptr<slam::ViewManager<slam::ViewPoseGraph>> pose_graph_view_;
   std::shared_ptr<PoseGraph> pose_graph_;  // return type is different, so cannot just return a pointer to a view
-  std::shared_ptr<slam::ViewManager<slam::ViewLocalizerProbes>> localizer_probes_view_;
-  std::shared_ptr<LocalizerProbes> localizer_probes_;
 
   Impl(const Rig& rig, const std::vector<uint8_t>& primary_cameras, const Config& config)
       : primary_cameras_(primary_cameras) {
@@ -668,7 +668,6 @@ public:
     options.planar_constraints = config.planar_constraints;
     options.throttling_time_ms = config.throttling_time_ms;
     use_gpu_ = config.use_gpu;
-    sync_mode_ = config.sync_mode;
     gt_align_mode_ = config.gt_align_mode;
     if (config.gt_align_mode) {
       THROW_INVALID_ARG_IF(!config.sync_mode, "sync_mode should be enabled for gt_align_mode.");
@@ -685,11 +684,7 @@ public:
       pose_graph_view_ = std::make_shared<slam::ViewManager<slam::ViewPoseGraph>>();
       pose_graph_ = std::make_shared<PoseGraph>();
 
-      localizer_probes_view_ = std::make_shared<slam::ViewManager<slam::ViewLocalizerProbes>>();
-      localizer_probes_ = std::make_shared<LocalizerProbes>();
-
-      for (DataLayer layer : {DataLayer::Map, DataLayer::LoopClosure, DataLayer::LocalizerMap,
-                              DataLayer::LocalizerLandmarks, DataLayer::LocalizerLoopClosure, DataLayer::Landmarks}) {
+      for (DataLayer layer : {DataLayer::Map, DataLayer::LoopClosure, DataLayer::Landmarks}) {
         landmarks_views_[ToUnderlying(layer)] = std::make_shared<slam::ViewManager<slam::ViewLandmarks>>();
         landmarks_[ToUnderlying(layer)] = std::make_shared<Landmarks>();
       }
@@ -700,7 +695,7 @@ public:
     }
   }
 
-  ~Impl() {}
+  ~Impl() = default;
 
   void Track(FrameId frame_id, int64_t timestamp_ns, const odom::IVisualOdometry::VOFrameStat& stat,
              const Isometry3T& delta, const sof::Images& images) {
@@ -713,45 +708,7 @@ public:
     }
     async_slam_->TrackResult(frame_id, timestamp_ns, stat, slam_images, delta, nullptr);
     // for synchronous execution:
-    async_slam_->MainLoopStep();
-
-    LocalizeNext(slam_images);
-  }
-
-  void LocalizeNext(const sof::Images& slam_images) {
-    if (!async_localizer_) {
-      return;
-    }
-
-    Isometry3T slam_pose;
-    if (!async_slam_->GetSlamPose(slam_pose)) {
-      throw std::runtime_error("Failed to get SLAM pose");
-    }
-
-    // Async localization in progress
-    slam::AsyncSlam::LocalizationResult localization_result;
-    if (async_localizer_->ReceiveResult(localization_result)) {
-      SendLocalizationResult(localization_result, localizer_response_);
-      // finished
-      async_localizer_.reset();
-      localizer_response_ = nullptr;
-    } else {
-      async_localizer_->AddNewRequest(async_slam_->GetVOTrackData(), slam_images, slam_pose);
-    }
-  }
-
-  void SendLocalizationResult(const slam::AsyncSlam::LocalizationResult& result, LocalizationCallback callback) {
-    if (result.is_valid()) {
-      // Union
-      async_slam_->LocalizedInSlam(result);
-    }
-    if (callback) {
-      if (result.is_valid()) {
-        callback(Result<Pose>::Success(ConvertIsometryToPose(OpencvFromCuvslam(result.pose_in_slam))));
-      } else {
-        callback(Result<Pose>::Error("Localization failed"));
-      }
-    }
+    async_slam_->ProcessInputSynchronously();
   }
 };
 
@@ -764,13 +721,11 @@ Slam::~Slam() = default;
 
 Pose Slam::Track(const Odometry::State& state, const Pose* gt_pose) {
   // Convert from public API types to internal types
-  Isometry3T internal_delta = CuvslamFromOpencv(ConvertPoseToIsometry(state.delta));
+  Isometry3T internal_delta = ConvertPoseToIsometry(state.delta);
   if (impl->gt_align_mode_) {
     THROW_INVALID_ARG_IF(gt_pose == nullptr, "gt_pose should be provided if gt_align_mode is enabled.");
-    Isometry3T prev_pose{Isometry3T::Identity()};
-    // if GetSlamPose returns false, prev_pose stays Identity
-    impl->async_slam_->GetSlamPose(prev_pose);
-    internal_delta = prev_pose.inverse() * CuvslamFromOpencv(ConvertPoseToIsometry(*gt_pose));
+    const Isometry3T prev_pose = impl->async_slam_->GetSlamPose();
+    internal_delta = prev_pose.inverse() * ConvertPoseToIsometry(*gt_pose);
     internal_delta.linear() = common::CalculateRotationFromSVD(internal_delta.matrix());
   } else {
     THROW_INVALID_ARG_IF(gt_pose != nullptr, "gt_pose should be nullptr if gt_align_mode is disabled.");
@@ -792,7 +747,7 @@ Pose Slam::Track(const Odometry::State& state, const Pose* gt_pose) {
 
   // Convert landmarks to tracks3d
   for (const auto& lm : state.landmarks) {
-    Vector3T internal_lm = CuvslamFromOpencv(lm.coords);
+    Vector3T internal_lm{lm.coords[0], lm.coords[1], lm.coords[2]};
     stat.tracks3d[lm.id] = internal_lm;
   }
 
@@ -809,10 +764,7 @@ Pose Slam::Track(const Odometry::State& state, const Pose* gt_pose) {
   impl->Track(state.frame_id, state.timestamp_ns, stat, internal_delta, slam_images);
   impl->frame_id_ = state.frame_id;
 
-  Isometry3T slam_pose;
-  if (!impl->async_slam_->GetSlamPose(slam_pose)) {
-    throw std::runtime_error("Failed to get SLAM pose");
-  }
+  const Isometry3T slam_pose = impl->async_slam_->GetSlamPose();
   // copy odometry landmarks to observations view
   auto view_manager = impl->landmarks_views_[ToUnderlying(DataLayer::Landmarks)];
   auto landmarks_view = view_manager ? view_manager->acquire_earliest() : nullptr;
@@ -825,12 +777,7 @@ Pose Slam::Track(const Odometry::State& state, const Pose* gt_pose) {
     }
     landmarks_view->timestamp_ns = state.timestamp_ns;
   }
-  return ConvertIsometryToPose(OpencvFromCuvslam(slam_pose));
-}
-
-void Slam::SetSlamPose(const Pose& pose) {
-  Isometry3T slam_pose = CuvslamFromOpencv(ConvertPoseToIsometry(pose));
-  impl->async_slam_->SetAbsolutePose(slam_pose);
+  return ConvertIsometryToPose(slam_pose);
 }
 
 void Slam::GetAllSlamPoses(std::vector<PoseStamped>& poses, uint32_t max_poses_count) const {
@@ -851,7 +798,7 @@ void Slam::GetAllSlamPoses(std::vector<PoseStamped>& poses, uint32_t max_poses_c
       break;
     }
     poses[i].timestamp_ns = static_cast<int64_t>(timestamp_ns);
-    poses[i].pose = ConvertIsometryToPose(OpencvFromCuvslam(pose));
+    poses[i].pose = ConvertIsometryToPose(pose);
     i++;
   }
 }
@@ -866,14 +813,12 @@ void Slam::SaveMap(const std::string_view& folder_name, std::function<void(bool 
     return;                                                        \
   }
 
-void Slam::LocalizeInMap(const std::string_view& folder_name, const Pose& guess_pose, const ImageSet& images,
-                         LocalizationSettings settings, LocalizationCallback callback) {
-  CALLBACK_AND_RETURN_IF(impl->async_localizer_, callback, Pose, "Localization is already in progress.");
-
-  slam::AsyncLocalizerOptions localizer_options;
+// timestamp_ns - localization timestamp
+void Slam::LocalizeInMap(const std::string_view& folder_name, int64_t timestamp_ns, const Pose& guess_pose,
+                         const ImageSet& images, const LocalizationSettings& settings, LocalizeStartCB start_cb,
+                         LocalizeFinishCB finish_cb) {
+  slam::LocalizerOptions localizer_options;
   localizer_options.use_gpu = impl->use_gpu_;
-  localizer_options.reproduce_mode = impl->sync_mode_;
-  localizer_options.static_frame_calculation = false;
 
   localizer_options.horizontal_search_radius = settings.horizontal_search_radius;
   localizer_options.vertical_search_radius = settings.vertical_search_radius;
@@ -881,81 +826,64 @@ void Slam::LocalizeInMap(const std::string_view& folder_name, const Pose& guess_
   localizer_options.vertical_step = settings.vertical_step;
   localizer_options.angle_step_rads = settings.angular_step_rads;
 
-  Isometry3T isometry_guess_pose = CuvslamFromOpencv(ConvertPoseToIsometry(guess_pose));
+  THROW_INVALID_ARG_IF(images.empty(), "No images provided");
 
-  Isometry3T current_pose;
-  CALLBACK_AND_RETURN_IF(!impl->async_slam_->GetSlamPose(current_pose), callback, Pose,
-                         "Failed to get SLAM pose. Make sure Slam::Track() is called before LocalizeInMap()");
+  const Isometry3T isometry_guess_pose = ConvertPoseToIsometry(guess_pose);
 
-  // AsyncLocalizer is created only for the duration of the localization
-  auto localizer = std::make_unique<slam::AsyncLocalizer>();
-  localizer->Init(impl->rig_, localizer_options);
+  // copy user images
+  Sources image_sources(images.size());
+  Metas image_metas(images.size());
+  sof::Images images_ptrs;
+  // Get image dimensions from the first camera (assuming all cameras have same resolution)
+  const ImageShape shape{images[0].width, images[0].height};
+  constexpr size_t cache_size = 4;
+  const auto image_manager = std::make_unique<sof::ImageManager>();
+  const auto& primary_cameras = impl->primary_cameras_;
+  const bool use_gpu = impl->use_gpu_;
+  image_manager->init(shape, primary_cameras.size() * cache_size, use_gpu, 0);
 
-  if (settings.enable_reading_internals && impl->enable_reading_internals_) {
-    localizer->SetLocalizerLandmarksView(impl->landmarks_views_[ToUnderlying(DataLayer::LocalizerMap)]);
-    localizer->SetLocalizerObservationView(impl->landmarks_views_[ToUnderlying(DataLayer::LocalizerLandmarks)]);
-    localizer->SetLocalizerLCLandmarksView(impl->landmarks_views_[ToUnderlying(DataLayer::LocalizerLoopClosure)]);
-    localizer->SetLocalizerProbesView(impl->localizer_probes_view_);
-  }
-
-  CALLBACK_AND_RETURN_IF(!localizer->OpenDatabase(std::string{folder_name}), callback, Pose,
-                         "Failed to open database.");
-
-  if (impl->sync_mode_) {
-    // horrible copy-paste from C API
-    const auto& primary_cameras = impl->primary_cameras_;
-    Sources image_sources(images.size());
-    Metas image_metas(images.size());
-    sof::Images images_ptrs;
-    // Get image dimensions from the first camera (assuming all cameras have same resolution)
-    ImageShape shape{images[0].width, images[0].height};
-    const size_t cache_size = 4;
-    auto image_manager = std::make_unique<sof::ImageManager>();
-    image_manager->init(shape, primary_cameras.size() * cache_size, localizer_options.use_gpu, 0);
-
-    for (const auto& image : images) {
-      auto cam_id = image.camera_index;
-      if (std::none_of(primary_cameras.begin(), primary_cameras.end(), [cam_id](auto&& id) { return id == cam_id; })) {
-        continue;
-      }
-
-      ImageSource& source = image_sources[cam_id];
-      ImageMeta& meta = image_metas[cam_id];
-
-      meta.frame_id = impl->frame_id_;
-      meta.camera_index = cam_id;
-      meta.timestamp = images[0].timestamp_ns;
-
-      FillImageSourceAndShape(image, source, meta.shape);
-
-      sof::ImageContextPtr ptr = image_manager->acquire();
-      CALLBACK_AND_RETURN_IF(ptr == nullptr, callback, Pose, "Failed to acquire image context from image_manager");
-      ptr->set_image_meta(meta);
-      if (localizer_options.use_gpu) {
 #ifdef USE_CUDA
-        cuda::Stream s{true};
-        ptr->build_gpu_image_pyramid(source, false, s.get_stream());
-        ptr->build_gpu_gradient_pyramid(false, s.get_stream());
+  cuda::Stream s{true};
 #endif
-      } else {
-        ptr->build_cpu_image_pyramid(source, false);
-        ptr->build_cpu_gradient_pyramid(false);
-      }
-      images_ptrs[cam_id] = ptr;
+  for (const auto& image : images) {
+    auto cam_id = image.camera_index;
+    if (std::none_of(primary_cameras.begin(), primary_cameras.end(), [cam_id](auto&& id) { return id == cam_id; })) {
+      continue;
     }
-    CALLBACK_AND_RETURN_IF(images_ptrs.empty(), callback, Pose, "No valid images to localize");
 
-    // Use current frame for localization
-    const slam::AsyncSlam::VOTrackData& track_data = impl->async_slam_->GetVOTrackData();
-    slam::AsyncSlam::LocalizationResult result;
-    localizer->LocalizeSync(isometry_guess_pose, current_pose, track_data, images_ptrs, result);
-    impl->SendLocalizationResult(result, callback);
-  } else {
-    // Start localization in a separate thread
-    localizer->StartLocalizationThread(isometry_guess_pose, current_pose);
-    impl->localizer_response_ = std::move(callback);
-    impl->async_localizer_ = std::move(localizer);
+    ImageSource& source = image_sources[cam_id];
+    ImageMeta& meta = image_metas[cam_id];
+
+    meta.frame_id = impl->frame_id_;
+    meta.camera_index = cam_id;
+    meta.timestamp = images[0].timestamp_ns;  // image timestamp could be different from localization timestamp
+
+    FillImageSourceAndShape(image, source, meta.shape);
+
+    sof::ImageContextPtr ptr = image_manager->acquire();
+    THROW_INVALID_ARG_IF(ptr == nullptr, "Failed to acquire image context from image_manager");
+    ptr->set_image_meta(meta);
+    if (use_gpu) {
+#ifdef USE_CUDA
+      ptr->build_gpu_image_pyramid(source, false, s.get_stream());
+      ptr->build_gpu_gradient_pyramid(false, s.get_stream());
+#endif
+    } else {
+      ptr->build_cpu_image_pyramid(source, false);
+      ptr->build_cpu_gradient_pyramid(false);
+    }
+    images_ptrs[cam_id] = ptr;
   }
+#ifdef USE_CUDA
+  if (use_gpu) {
+    CUDA_CHECK(cudaStreamSynchronize(s.get_stream()));  // Synchronize once after all pyramids are built
+  }
+#endif
+
+  THROW_INVALID_ARG_IF(images_ptrs.empty(), "No valid images to localize");
+
+  impl->async_slam_->LocalizeInMap(folder_name, timestamp_ns, isometry_guess_pose, images_ptrs, settings, start_cb,
+                                   finish_cb);
 }
 
 void Slam::GetSlamMetrics(Metrics& metrics) const {
@@ -987,7 +915,7 @@ void Slam::GetLoopClosurePoses(std::vector<PoseStamped>& poses) const {
   size_t i = 0;
   for (const auto& lc_stamped : last_loop_closures_stamped) {
     poses[i].timestamp_ns = lc_stamped.timestamp_ns;
-    poses[i].pose = ConvertIsometryToPose(OpencvFromCuvslam(lc_stamped.pose));
+    poses[i].pose = ConvertIsometryToPose(lc_stamped.pose);
     i++;
   }
 }
@@ -999,9 +927,6 @@ void Slam::EnableReadingData(DataLayer layer, uint32_t max_items_count) {
   switch (layer) {
     case DataLayer::Map:
     case DataLayer::LoopClosure:
-    case DataLayer::LocalizerMap:
-    case DataLayer::LocalizerLandmarks:
-    case DataLayer::LocalizerLoopClosure:
     case DataLayer::Landmarks:
       assert(impl->landmarks_views_[ToUnderlying(layer)]);
       impl->landmarks_views_[ToUnderlying(layer)]->init(2, max_items_count);
@@ -1009,10 +934,6 @@ void Slam::EnableReadingData(DataLayer layer, uint32_t max_items_count) {
     case DataLayer::PoseGraph:
       assert(impl->pose_graph_view_);
       impl->pose_graph_view_->init(2, max_items_count);
-      break;
-    case DataLayer::LocalizerProbes:
-      assert(impl->localizer_probes_view_);
-      impl->localizer_probes_view_->init(2, max_items_count);
       break;
     default:
       throw std::runtime_error("Invalid data layer: " + std::to_string(ToUnderlying(layer)));
@@ -1026,9 +947,6 @@ void Slam::DisableReadingData(DataLayer layer) {
   switch (layer) {
     case DataLayer::Map:
     case DataLayer::LoopClosure:
-    case DataLayer::LocalizerMap:
-    case DataLayer::LocalizerLandmarks:
-    case DataLayer::LocalizerLoopClosure:
     case DataLayer::Landmarks:
       assert(impl->landmarks_views_[ToUnderlying(layer)]);
       impl->landmarks_views_[ToUnderlying(layer)]->reset();
@@ -1036,10 +954,6 @@ void Slam::DisableReadingData(DataLayer layer) {
     case DataLayer::PoseGraph:
       assert(impl->pose_graph_view_);
       impl->pose_graph_view_->reset();
-      break;
-    case DataLayer::LocalizerProbes:
-      assert(impl->localizer_probes_view_);
-      impl->localizer_probes_view_->reset();
       break;
     default:
       throw std::runtime_error("Invalid data layer: " + std::to_string(ToUnderlying(layer)));
@@ -1055,8 +969,6 @@ std::shared_ptr<const Slam::Landmarks> Slam::ReadLandmarks(DataLayer layer) {
     throw std::runtime_error("Invalid data layer: " + std::to_string(ToUnderlying(layer)));
   } else if (layer == DataLayer::PoseGraph) {
     throw std::runtime_error("For DataLayer::PoseGraph use ReadPoseGraph() instead");
-  } else if (layer == DataLayer::LocalizerProbes) {
-    throw std::runtime_error("For DataLayer::LocalizerProbes use ReadLocalizerProbes() instead");
   }
   assert(impl->landmarks_views_[layer_index]);
   auto latest = impl->landmarks_views_[layer_index]->acquire_latest();
@@ -1065,7 +977,7 @@ std::shared_ptr<const Slam::Landmarks> Slam::ReadLandmarks(DataLayer layer) {
     impl->landmarks_[layer_index]->landmarks.clear();
     impl->landmarks_[layer_index]->landmarks.reserve(latest->landmarks.size());
     for (const auto& lm : latest->landmarks) {
-      impl->landmarks_[layer_index]->landmarks.push_back({lm.id, lm.weight, OpencvFromCuvslam(lm.coords)});
+      impl->landmarks_[layer_index]->landmarks.push_back({lm.id, lm.weight, lm.coords});
     }
   }
   return impl->landmarks_[layer_index];
@@ -1084,48 +996,16 @@ std::shared_ptr<const Slam::PoseGraph> Slam::ReadPoseGraph() {
     impl->pose_graph_->nodes.reserve(latest->nodes.size());
     impl->pose_graph_->edges.reserve(latest->edges.size());
     for (const auto& node : latest->nodes) {
-      impl->pose_graph_->nodes.push_back({node.id, ConvertIsometryToPose(OpencvFromCuvslam(node.node_pose))});
+      impl->pose_graph_->nodes.push_back({node.id, ConvertIsometryToPose(node.node_pose)});
     }
     for (const auto& edge : latest->edges) {
       PoseCovariance covariance;
       mat<6>(covariance) = edge.covariance;
       impl->pose_graph_->edges.push_back(
-          {edge.node_from, edge.node_to, ConvertIsometryToPose(OpencvFromCuvslam(edge.transform)), covariance});
+          {edge.node_from, edge.node_to, ConvertIsometryToPose(edge.transform), covariance});
     }
   }
   return impl->pose_graph_;
-}
-
-std::shared_ptr<const Slam::LocalizerProbes> Slam::ReadLocalizerProbes() {
-  if (!impl->enable_reading_internals_) {
-    throw std::runtime_error("Reading data is not available, set enable_reading_internals flag in Slam::Config");
-  }
-  assert(impl->localizer_probes_view_);
-  auto latest = impl->localizer_probes_view_->acquire_latest();
-  if (latest) {
-    impl->localizer_probes_->timestamp_ns = latest->timestamp_ns;
-    impl->localizer_probes_->size = latest->size;
-    impl->localizer_probes_->probes.clear();
-    impl->localizer_probes_->probes.reserve(latest->probes.size());
-    for (const auto& probe : latest->probes) {
-      impl->localizer_probes_->probes.push_back({probe.id, ConvertIsometryToPose(OpencvFromCuvslam(probe.guess_pose)),
-                                                 ConvertIsometryToPose(OpencvFromCuvslam(probe.exact_result_pose)),
-                                                 probe.weight, probe.exact_result_weight, probe.solved});
-    }
-  }
-  return impl->localizer_probes_;
-}
-void Slam::MergeMaps(const Rig& rig, const std::vector<std::string_view>& databases,
-                     const std::string_view& output_folder) {
-  // Get camera rig from tracker
-  camera::Rig internal_rig;
-  std::vector<std::unique_ptr<camera::ICameraModel>> cameras_models;
-  SetTrackerRigAndIntrinsics(cameras_models, internal_rig, rig.cameras);
-
-  std::vector<std::string> databases_str(databases.begin(), databases.end());
-  if (!slam::MergeDatabases(internal_rig, databases_str, std::string{output_folder})) {
-    throw std::runtime_error("Failed to merge maps");
-  }
 }
 
 }  // namespace cuvslam

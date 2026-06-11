@@ -180,7 +180,7 @@ static void DoStereoTrack(const std::string& edexFile, std::string outputFolder,
   }
 
   std::random_device dev;
-  auto drop = CreatImageDropper(FLAGS_image_drop_type, std::mt19937{dev()});
+  auto drop = CreateImageDropper(ParseImageDropperType(FLAGS_image_drop_type), std::mt19937{dev()});
 
   while (err != ErrorCode::E_Bounds) {
     err = rig.getFrame(curr_sources, curr_meta, masks_sources, depth_sources);
@@ -221,7 +221,7 @@ static void DoStereoTrack(const std::string& edexFile, std::string outputFolder,
     frameId = curr_meta.begin()->second.frame_id;
     std::cout << "Track frame " << frameId << std::endl;
     stereo_sof->trackNextFrame(curr_sources, curr_image_ptrs, prev_image_ptrs, masks_sources, Isometry3T::Identity(),
-                               tracks, frameState);
+                               tracks, frameState, odom::TrackPerFrameSettings{sof_settings, kf_settings});
 
     std::unordered_map<CameraId, cv::Mat> drawings;
     for (const auto& [cam, meta] : curr_meta) {

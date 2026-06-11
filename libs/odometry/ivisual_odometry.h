@@ -26,6 +26,7 @@
 #include "sof/image_context.h"
 
 #include "odometry/ipredictor.h"
+#include "odometry/svo_config.h"
 
 namespace cuvslam::odom {
 
@@ -36,9 +37,12 @@ public:
   // OUT: delta           - delta between frames in the world coordinate system
   //      static_info_exp - information matrix for the static pose in exponential mapping form
   //                        in the world coordinate system
+  // per_frame_setting: per-frame settings bundle; use TrackPerFrameSettings{} for defaults.
+  //                    Add new per-frame setting categories to TrackPerFrameSettings rather than extending this
+  //                    signature.
   virtual bool track(const Sources& curr_sources, const DepthSources& depth_sources, sof::Images& curr_images,
                      const sof::Images& prev_images, const Sources& masks_sources, Isometry3T& delta,
-                     Matrix6T& static_info_exp) = 0;
+                     Matrix6T& static_info_exp, const TrackPerFrameSettings& per_frame_setting) = 0;
 
   struct VOFrameStat {
     bool keyframe;

@@ -25,14 +25,15 @@
 namespace cuvslam::pipelines {
 
 struct StateMachineSettings {
-  int64_t gravity_update_period_ns = 5e8;  // 1 sec = 1e9 ns
+  // Effectively disable periodic re-estimation; gravity estimated once at boot
+  int64_t gravity_update_period_ns = 5e12;
 
   int64_t max_integration_time_ns = 1e9;
 
   size_t min_num_kf_for_gravity = 20;  // cant be larger then map size!
 
-  int64_t min_time_period_ns = 2e9;
-  int64_t max_time_period_ns = 8e9;
+  int64_t min_time_period_ns = 2e9;   // require at least 2s of keyframe history
+  int64_t max_time_period_ns = 25e9;  // 25 seconds
 };
 
 class StateMachine {

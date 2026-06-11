@@ -17,6 +17,7 @@ set(MODULE_NAME "launcher")
 
 set(HEADERS
     base_launcher.h
+    launch_load_and_localize.h
     launcher_create.h
     monocular_launcher.h
     multi_camera_launcher.h
@@ -26,6 +27,7 @@ set(HEADERS
 
 set(SOURCES
     base_launcher.cpp
+    launch_load_and_localize.cpp
     visual_inertial_launcher.cpp
     launcher_create.cpp
     monocular_launcher.cpp

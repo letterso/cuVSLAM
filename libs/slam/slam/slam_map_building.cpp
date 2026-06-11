@@ -19,11 +19,11 @@
 #include <vector>
 
 #include "common/isometry.h"
+#include "common/rerun.h"
 #include "common/types.h"
 #include "common/vector_2t.h"
 
 #include "slam/common/slam_common.h"
-#include "slam/common/slam_input_image.h"
 #include "slam/map/descriptor/feature_descriptor.h"
 #include "slam/map/pose_graph/pose_graph.h"
 #include "slam/slam/slam.h"
@@ -32,7 +32,9 @@ namespace cuvslam::slam {
 
 void LocalizerAndMapper::AddKeyframe(const Isometry3T& from_last_keyframe, const VOFrameData& frame_data,
                                      const Images& images) {
-  SetCurrentPoseFromLastKeyframe(from_last_keyframe);  // update pose_estimate_
+  Isometry3T pose_estimate = GetCurrentPose() * from_last_keyframe;
+  RemoveScaleFromTransform(pose_estimate);
+
   const uint64_t timestamp_ns = frame_data.timestamp_ns;
 
   // add new keyframe to keyframes
@@ -59,7 +61,7 @@ void LocalizerAndMapper::AddKeyframe(const Isometry3T& from_last_keyframe, const
       }
     }
 
-    PoseGraph::EdgeStat edge_stat;
+    PoseGraphEdgeStat edge_stat;
     edge_stat.tracks3d_number = frame_data.tracks3d_rel.size();
 
     PoseGraphKeyframeInfo extra_keyframe_info;
@@ -71,7 +73,7 @@ void LocalizerAndMapper::AddKeyframe(const Isometry3T& from_last_keyframe, const
       keyFrameId = map_.pose_graph_.AddKeyframe(map_.pose_graph_hypothesis_, nullptr, nullptr,
                                                 frame_data.frame_information, extra_keyframe_info, &edge_stat);
     }
-    map_.pose_graph_hypothesis_.SetKeyframePose(keyFrameId, pose_estimate_);
+    map_.pose_graph_hypothesis_.SetKeyframePose(keyFrameId, pose_estimate);
 
     // required for CalcFramePose()
     if (keep_track_poses_) {
@@ -202,6 +204,7 @@ void LocalizerAndMapper::AddKeyframe(const Isometry3T& from_last_keyframe, const
   if (map_.database_) {
     map_.pose_graph_hypothesis_.PutToDatabase(map_.database_.get());
   }
+  RERUN(map_.logPoseGraph);
 }
 
 void LocalizerAndMapper::MoveReadyStagedLandmarksToLSI(uint64_t timestamp_ns) {
@@ -213,44 +216,12 @@ void LocalizerAndMapper::MoveReadyStagedLandmarksToLSI(uint64_t timestamp_ns) {
   map_.pose_graph_.GetHeadKeyframe(head_keyframe);  // can be InvalidKeyFrameId is Lost
 
   map_.landmarks_spatial_index_->MoveReadyStagedLandmarksToLSI(
-      pose_estimate_, active_cameras_.value(), map_.pose_graph_hypothesis_, head_keyframe, timestamp_ns);
+      GetCurrentPose(), active_cameras_.value(), map_.pose_graph_hypothesis_, head_keyframe, timestamp_ns);
 
   std::function func_remove_from_keyframe = [&](LandmarkId landmark_id, KeyFrameId keyframe_id) {
     RemoveLandmarkRelation(landmark_id, keyframe_id);
   };
   map_.landmarks_spatial_index_->RemoveDeadLandmarks(func_remove_from_keyframe);
-}
-
-void LocalizerAndMapper::SetCurrentPoseFromLastKeyframe(const Isometry3T& from_last_keyframe) {
-  Isometry3T pose_estimate;
-  if (set_start_pose_) {  // buggy logic TODO: remove
-    pose_estimate = *set_start_pose_;
-    set_start_pose_ = std::nullopt;
-  } else {
-    pose_estimate = pose_estimate_ * from_last_keyframe;
-  }
-  RemoveScaleFromTransform(pose_estimate);
-  pose_estimate_ = pose_estimate;
-}
-
-bool LocalizerAndMapper::SetAbsolutePose(const Isometry3T& global_pose) {
-  KeyFrameId head_keyframe_id;
-  if (!map_.pose_graph_.GetHeadKeyframe(head_keyframe_id)) {
-    set_start_pose_ = global_pose;
-    return true;
-  }
-  const Isometry3T from_to = pose_estimate_.inverse() * global_pose;
-  const Isometry3T* head_keyframe_pose = map_.pose_graph_hypothesis_.GetKeyframePose(head_keyframe_id);
-  if (!head_keyframe_pose) {
-    return false;
-  }
-  const Isometry3T new_head_keyframe_pose = (*head_keyframe_pose) * from_to;
-
-  pose_estimate_ = global_pose;
-  map_.pose_graph_hypothesis_.SetKeyframePose(head_keyframe_id, new_head_keyframe_pose);
-  const Matrix6T covariance = Map::GetHardEdgeDefaultCovariance();
-  map_.pose_graph_.SetEdgeCovarianceAndFromTo(map_.pose_graph_hypothesis_, head_keyframe_id, covariance, global_pose);
-  return true;
 }
 
 }  // namespace cuvslam::slam

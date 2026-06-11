@@ -19,20 +19,25 @@
 
 namespace cuvslam {
 
-// matrix to change basis
+// Maps IMU log vectors into the internal OpenCV camera/world frame (x right, y down, z forward).
 Matrix3T CoordinateSystemTocuVSLAM(CoordinateSystem cs) {
-  Matrix3T change_basis;
+  const Matrix3T legacy_cuvslam_to_opencv = [] {
+    Matrix3T m = Matrix3T::Identity();
+    m(1, 1) = -1.f;
+    m(2, 2) = -1.f;
+    return m;
+  }();
   switch (cs) {
-    case CoordinateSystem::ROS:
-      change_basis << 0.f, -1.f, 0.f, 0.f, 0.f, 1.f, -1.f, 0.f, 0.f;
-      return change_basis;
+    case CoordinateSystem::ROS: {
+      Matrix3T ros_to_legacy_cuvslam;
+      ros_to_legacy_cuvslam << 0.f, -1.f, 0.f, 0.f, 0.f, 1.f, -1.f, 0.f, 0.f;
+      return legacy_cuvslam_to_opencv * ros_to_legacy_cuvslam;
+    }
     case CoordinateSystem::OPENCV:
-      change_basis = Matrix3T::Identity();
-      change_basis(1, 1) = -1.f;
-      change_basis(2, 2) = -1.f;
-      return change_basis;
-    default:
       return Matrix3T::Identity();
+    default:
+      // Legacy EDEX IMU logs in pre-OpenCV cuVSLAM frame (same as old internal).
+      return legacy_cuvslam_to_opencv;
   }
 }
 

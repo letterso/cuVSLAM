@@ -38,7 +38,7 @@ MultiSOFCPU::MultiSOFCPU(const camera::Rig& rig, const camera::FrustumIntersecti
 
     auto& tracker_from_secondary_cam = secondary_from_primary_sof_[primary_cam_id];
     for (CameraId secondary_cam_id : secondary_cams) {
-      tracker_from_secondary_cam[secondary_cam_id] = CreateTracker(sof_settings.lr_tracker.c_str());
+      tracker_from_secondary_cam[secondary_cam_id] = CreateTracker(sof_settings.lr_tracker);
     }
   }
 }

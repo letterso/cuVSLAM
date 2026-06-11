@@ -31,10 +31,12 @@ struct Settings {
   int32_t num_sba_frames = 7;
 
   // number of key frames in Inertial SBA
-  int32_t num_inertial_sba_frames = 7;
+  int32_t num_inertial_sba_frames = 10;
 
   // number of fixed key frames in SBA
   int32_t num_fixed_sba_frames = 3;
+
+  int32_t num_inertial_fixed_sba_frames = 1;
 
   // maximum number of iterations for new SBA
   int32_t num_sba_iterations = 7;

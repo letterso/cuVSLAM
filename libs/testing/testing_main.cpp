@@ -15,79 +15,63 @@
  * of the software or derivative works thereof, you agree to be bound by this License.
  */
 
-#include <chrono>
+#include <cstdlib>
 
 #include "gflags/gflags.h"
 
 #include "common/include_gtest.h"
 #include "common/log.h"
 
-#define CUVSLAM_TEST_RAND_SEED \
-  static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count())
-
-DEFINE_VARIABLE(gflags::uint64, U64, cuvslam_test_seed, CUVSLAM_TEST_RAND_SEED,
-                "Set initial seed for random generator");
-
 DEFINE_string(logger_filename, "", "Log filename");
 
-namespace test::utils {
+namespace test {
 
-class cuVSLAMTestRandSeedClass {
-  mutable unsigned int init_;
-  mutable unsigned int seed_;
+// Seeds std::rand() for each test and prints a retry command on failure.
+//
+// std::rand() is re-seeded before each test with gtest's --gtest_random_seed
+// (time-based when unset), making random data independent of execution order
+// and --gtest_filter. gtest advances its own seed between iterations when
+// --gtest_shuffle is set, so use it with --gtest_repeat to get varying data.
+class GTestEventListener : public ::testing::EmptyTestEventListener {
+  const char* binary_ = nullptr;
 
 public:
-  cuVSLAMTestRandSeedClass(unsigned int s) : init_(s), seed_(0) {}
+  explicit GTestEventListener(const char* binary) : binary_(binary) {}
 
-  void init(unsigned int s) const { init_ = s; }
+  void OnTestStart(const ::testing::TestInfo&) override {
+    std::srand(::testing::UnitTest::GetInstance()->random_seed());
+  }
 
-  unsigned int get() const { return seed_; }
-
-  void seed() const {
-    seed_ = init_;
-    std::srand(seed_);
-    init_ += static_cast<unsigned int>(std::rand());
+  void OnTestEnd(const ::testing::TestInfo& info) override {
+    if (info.result()->Failed()) {
+      printf("\n[CUVSLAM_TEST_RETRY]\t%s --gtest_filter=%s.%s --gtest_random_seed=%d\n", binary_,
+             info.test_suite_name(), info.name(), ::testing::UnitTest::GetInstance()->random_seed());
+    }
   }
 };
 
-extern const cuVSLAMTestRandSeedClass CUVSLAM_TEST_SEED(0);
+}  // namespace test
 
-class GTestEvenListener : public ::testing::EmptyTestEventListener {
-  void OnTestIterationStart(const ::testing::UnitTest&, int) override {
-    CUVSLAM_TEST_SEED.seed();
-    printf("\n[CUVSLAM_TEST_RAND_SEED]\t%u\n\n", CUVSLAM_TEST_SEED.get());
-  }
-};
-
-}  // namespace test::utils
-
-using namespace test::utils;
+using namespace cuvslam;
 
 int main(int argc, char** argv) {
-  // This allows the user to override the flag on the command line.
   ::testing::InitGoogleTest(&argc, argv);
 
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  cuvslam::Trace::SetVerbosity(cuvslam::Trace::Verbosity::Error);
-  // log
+  Trace::SetVerbosity(Trace::Verbosity::Error);
   if (!FLAGS_logger_filename.empty()) {
 #ifdef CUVSLAM_LOG_ENABLE
     std::cout << "Create spd logger: " << FLAGS_logger_filename << std::endl;
-    auto logger = cuvslam::log::CreateSpdlogLogger(FLAGS_logger_filename.c_str());
-    cuvslam::log::SetLogger(logger);
+    auto logger = log::CreateSpdlogLogger(FLAGS_logger_filename.c_str());
+    log::SetLogger(logger);
 #else  // !CUVSLAM_LOG_ENABLE
     std::cout << "No CUVSLAM_LOG_ENABLE definition. Flag -logger_filename will be ignored " << std::endl;
 #endif
   }
 
-  CUVSLAM_TEST_SEED.init(static_cast<unsigned int>(FLAGS_cuvslam_test_seed));
-
-  // Gets hold of the event listener list.
   ::testing::TestEventListeners& listeners = ::testing::UnitTest::GetInstance()->listeners();
-
-  // Adds a listener to the end of the list.
-  listeners.Append(new GTestEvenListener);
+  listeners.Append(new test::GTestEventListener(argv[0]));
 
   return RUN_ALL_TESTS();
 }

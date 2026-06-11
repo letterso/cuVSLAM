@@ -39,7 +39,7 @@ TEST(Map, AddKeyframe) {
 
   TrackId id = 0;
 
-  std::list<Observation> tracks;
+  std::list<camera::Observation> tracks;
 
   int64_t start_time_ns = 0;
   constexpr int64_t time_delta = 2 * 1e9;  // 2 sec
@@ -51,7 +51,7 @@ TEST(Map, AddKeyframe) {
   for (size_t i = 0; i < 2 * map.capacity(); i++) {
     std::vector<pipelines::Landmark> triangulated_tracks;
 
-    std::vector<Observation> new_tracks;
+    std::vector<camera::Observation> new_tracks;
     while (tracks.size() + new_tracks.size() < num_obs_per_keyframe) {
       new_tracks.emplace_back((uint8_t)0, id, Vector2T::Zero(), Matrix2T::Zero());
 
@@ -61,7 +61,7 @@ TEST(Map, AddKeyframe) {
 
     std::copy(new_tracks.begin(), new_tracks.end(), std::back_inserter(tracks));
 
-    std::vector<Observation> obs(tracks.begin(), tracks.end());
+    std::vector<camera::Observation> obs(tracks.begin(), tracks.end());
 
     auto start = std::chrono::high_resolution_clock::now();
     map.add_keyframe(curr_time, {}, {}, obs, triangulated_tracks);

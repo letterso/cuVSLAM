@@ -21,11 +21,13 @@
 #include <string>
 #include <thread>
 
+#include "common/coordinate_system.h"
 #include "common/log_types.h"
 #include "common/rerun.h"
 #include "common/thread_safe_queue.h"
 #include "common/unaligned_types.h"
-#include "log/log_eigen.h"
+#include "cuvslam/internal.h"
+#include "pipelines/visualizer.h"
 #include "profiler/profiler.h"
 
 #include "slam/map/database/lmdb_slam_database.h"
@@ -33,50 +35,78 @@
 #include "slam/slam/slam.h"
 #include "slam/view/map_to_view.h"
 #include "slam/view/view_landmarks.h"
+#include "sof/image_manager.h"
 #include "visualizer/visualizer.hpp"
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 
+#define CALLBACK_AND_RETURN_IF(condition, callback, type, message) \
+  if (condition) {                                                 \
+    callback(Result<type>::Error(message));                        \
+    return;                                                        \
+  }
+
+namespace {
+using namespace cuvslam;
+
+#ifdef USE_RERUN
+void LogSlamPose(const Isometry3T& slam_pose) {
+  const Vector3T& p = slam_pose.translation();
+  thread_local std::vector<rerun::Position3D> poses(1);
+  poses.clear();
+  poses.emplace_back(p.x(), p.y(), p.z());
+  visualizer::RerunVisualizer::getInstance().getRecordingStream().log(
+      "world/slam_pose", rerun::Points3D(poses).with_colors(Color(0, 255, 0)).with_radii(5.f));
+}
+#endif
+
+}  // namespace
+
 namespace cuvslam::slam {
 
 AsyncSlam::AsyncSlam(const camera::Rig& rig, const std::vector<CameraId>& cameras, const AsyncSlamOptions& options)
-    : rig_(rig), cameras_(cameras), slam_(rig, FeatureDescriptorType::kShiTomasi6, options.use_gpu), tail_(slam_) {
+    : rig_(rig),
+      cameras_(cameras),
+      slam_(std::make_unique<LocalizerAndMapper>(rig, FeatureDescriptorType::kShiTomasi6, options.use_gpu)) {
   reproduce_mode_ = options.reproduce_mode;
 
   // no second thread here - safe access to all data
   options_ = options;
-  slam_.SetReproduceMode(reproduce_mode_);
-  slam_.SetLandmarksSpatialIndex(options.spatial_index_options);
+  slam_->SetReproduceMode(reproduce_mode_);
+  slam_->SetLandmarksSpatialIndex(options.spatial_index_options);
   const bool randomized = !reproduce_mode_;
   loop_closure_solver_.reset(
       CreateLoopClosureSolver(options.loop_closure_solver_type, RansacType::kPnP, randomized, rig_));
-  slam_.SetPoseGraphOptimizerOptions(options.pgo_options);
-  slam_.SetActiveCameras(cameras_);
+  slam_->SetPoseGraphOptimizerOptions(options.pgo_options);
+  slam_->SetActiveCameras(cameras_);
   throttling_time_ns_ = options.throttling_time_ms * 1'000'000;
 
   if (options.max_pose_graph_nodes) {
-    slam_.SetKeyframesLimit(options.max_pose_graph_nodes);
+    slam_->SetKeyframesLimit(options.max_pose_graph_nodes);
   }
   if (options.pose_for_frame_required) {
-    slam_.SetKeepTrackPoses(true);
+    slam_->SetKeepTrackPoses(true);
   }
 
   tail_.Clear();
 
   if (!options.map_cache_path.empty()) {
-    if (!slam_.AttachToNewDatabase(options.map_cache_path)) {
+    if (!slam_->AttachToNewDatabase(options.map_cache_path)) {
       throw std::runtime_error("Failed to connect SLAM to map at " + options.map_cache_path);
     }
   }
 
   if (!reproduce_mode_) {
+    SlamStdout("Starting background thread");
     thread_ = std::thread{&AsyncSlam::Run, this};
+  } else {
+    SlamStdout("Do not start background thread because reproduce_mode is set.");
   }
 }
 AsyncSlam::~AsyncSlam() {
-  StopInternal();
+  Shutdown();
   SlamStdout("Destroyed AsyncSlam instance. ");
 }
 
@@ -108,9 +138,8 @@ void AsyncSlam::TrackResult(FrameId frameId, int64_t timestamp_ns, const odom::I
   VO_IncrementFrameData(frameId, timestamp_ns, delta, track_data_);
 
   if (is_keyframe && !images.empty()) {
-    std::shared_ptr<VOKeyframeInfo> vo_keyframe = std::make_shared<VOKeyframeInfo>(VOKeyframeInfo());
-    Isometry3T current_pose;
-    GetSlamPose(current_pose);
+    const auto vo_keyframe = std::make_shared<VOKeyframeInfo>(VOKeyframeInfo());
+    const Isometry3T current_pose = GetSlamPose();
 
     vo_keyframe->vo_pose_at_this_frame = current_pose;
     vo_keyframe->track_data = track_data_;
@@ -159,101 +188,52 @@ void AsyncSlam::TrackResult(FrameId frameId, int64_t timestamp_ns, const odom::I
         vo_keyframe->frame_data.tracks3d_rel[track_id] = xyz_rel;
       }
     }
-
-    //
-    input_queue_.Push(vo_keyframe);
-
+    if (tail_.UpdateTimeByOdometry(timestamp_ns, current_pose)) {
+      input_queue_.Push(vo_keyframe);
+    }
     VO_ResetFrameData(frameId, timestamp_ns, track_data_);
-    tail_.Grow(timestamp_ns, current_pose);
   }
   if (options_.pose_for_frame_required) {
     trajectory_[frameId] = track_data_;
   }
 
   if (slam_pose) {
-    Isometry3T current_pose;
-    GetSlamPose(current_pose);
-    *slam_pose = current_pose;
+    *slam_pose = GetSlamPose();
   }
+#ifdef USE_RERUN
+  {
+    const Isometry3T current_pose = GetSlamPose();
+    LogSlamPose(current_pose);
+    RERUN(pipelines::logTrajectory, current_pose.inverse(), "world/trajectories/slam", Color(255, 255, 255),
+          TrajectoryType::GT);
+  }
+#endif
 }
 
-// If Localizator have found the pose
-void AsyncSlam::LocalizedInSlam(const LocalizationResult& localization_result) {
-  std::shared_ptr<UnionAfterLocalizationCmd> union_after_localization_cmd =
-      std::make_shared<UnionAfterLocalizationCmd>(localization_result);
-  if (reproduce_mode_) {
-    // sync
-    FrameId end_frame_id = static_cast<size_t>(~0UL);
-    Isometry3T vo_pose_at_that_frame = Isometry3T::Identity();
-    union_after_localization_cmd->Execute(*this, end_frame_id, vo_pose_at_that_frame);
-  } else {
-    // async
-    auto vo_keyframe = std::make_shared<VOKeyframeInfo>(VOKeyframeInfo());
-    vo_keyframe->command = union_after_localization_cmd;
-    input_queue_.Push(vo_keyframe);
+Isometry3T AsyncSlam::GetSlamPose() const {
+  const auto may_be_tip = tail_.GetTip();
+  if (!may_be_tip) {
+    return Isometry3T::Identity();
   }
-}
-
-void AsyncSlam::LocalizedInSlam_internal(const LocalizationResult& lr, Isometry3T& slam_to_head) {
-  // Find Keyframe By FrameId
-  KeyFrameId to_keyframe_id = InvalidKeyFrameId;
-  Isometry3T from_keyframe_to_frame = Isometry3T::Identity();
-
-  std::lock_guard slam_guard(slam_mutex_);
-  if (!slam_.FindKeyframeByFrame(lr.track_data.start_frame_id, to_keyframe_id, from_keyframe_to_frame)) {
-    SlamStdout("Failed to find Keyframe for Frame %zd. ", static_cast<uint64_t>(lr.track_data.start_frame_id));
-    return;
-  }
-  from_keyframe_to_frame = from_keyframe_to_frame * lr.track_data.from_keyframe;
-
-  // UnionWith
-  slam_to_head = Isometry3T::Identity();
-  if (slam_.UnionWith(lr.slam_from->GetMap(), to_keyframe_id, lr.from_keyframe_id,
-                      lr.pose_in_slam * from_keyframe_to_frame.inverse(),  // test from_keyframe_to_frame.inverse()
-                      lr.pose_in_slam_covariance, &slam_to_head, UnionWithOptions())) {
-    SlamStdout("Successfully united. ");
-
-    // Reduce pose graph
-    {
-      TRACE_EVENT ev = profiler_domain_.trace_event("reduce keyframes", profiler_color_);
-      slam_.ReduceKeyframes();
-    }
-  } else {
-    SlamStdout("Failed to Union With current map. ");
-  }
-}
-
-bool AsyncSlam::GetSlamPose(Isometry3T& slam_pose) const {
-  const Isometry3T tail_tip = tail_.GetTipPose();
-  slam_pose = tail_tip * track_data_.from_keyframe;
+  const Isometry3T& tail_tip = may_be_tip->second;
+  Isometry3T slam_pose = tail_tip * track_data_.from_keyframe;
 
   if (options_.planar_constraints) {
     slam_pose.translation().y() = 0;
   }
-  return !tail_.IsEmpty();
+  return slam_pose;
 }
 
-void AsyncSlam::MainLoopStep() {
+void AsyncSlam::ProcessInputSynchronously() {
   if (reproduce_mode_) {
-    this->Step();
+    ProcessInput();
   }
 }
 
 // stop thread
 void AsyncSlam::Stop() {
-  StopInternal();
+  Shutdown();
   reproduce_mode_ = true;
-}
-
-bool is_equal(const Isometry3T& m1, const Isometry3T& m2) {
-  Vector3T xyz(1, 1, 1);
-  Vector3T xyz1 = m1 * xyz;
-  Vector3T xyz2 = m2 * xyz;
-  float n = (xyz1 - xyz2).norm();
-  if (n >= 0.0001) {
-    return false;
-  }
-  return true;
 }
 
 bool AsyncSlam::GetPoseForFrame(FrameId frameId, Isometry3T& pose) const {
@@ -273,9 +253,7 @@ bool AsyncSlam::GetPoseForFrame(FrameId frameId, Isometry3T& pose) const {
 
   Isometry3T m;
   std::lock_guard slam_guard(slam_mutex_);
-  if (slam_.CalcFramePose(track_data.end_frame_id, m)) {
-    // have to be same?
-    // is_equal(m, test_);
+  if (slam_->CalcFramePose(track_data.end_frame_id, m)) {
     m = m * track_data.from_keyframe;
     pose = m;
     return true;
@@ -296,9 +274,7 @@ bool AsyncSlam::GetPosesForAllFrames(std::map<uint64_t, storage::Isometry3<float
     assert(track_data.from_keyframe.matrix().allFinite());
 
     Isometry3T m;
-    if (slam_.CalcFramePose(track_data.end_frame_id, m)) {
-      // have to be same?
-      // is_equal(m, test_);
+    if (slam_->CalcFramePose(track_data.end_frame_id, m)) {
       m = m * track_data.from_keyframe;
       Isometry3T pose = m;
       frames[timestamp_ns] = pose;
@@ -306,8 +282,6 @@ bool AsyncSlam::GetPosesForAllFrames(std::map<uint64_t, storage::Isometry3<float
   }
   return true;
 }
-
-const AsyncSlam::VOTrackData& AsyncSlam::GetVOTrackData() const { return track_data_; }
 
 bool AsyncSlam::GetLastTelemetry(AsyncSlamLCTelemetry& telemetry) const {
   telemetry = last_telemetry_;
@@ -317,7 +291,7 @@ bool AsyncSlam::GetLastTelemetry(AsyncSlamLCTelemetry& telemetry) const {
 const std::list<LoopClosureStamped>& AsyncSlam::GetLastLoopClosuresStamped() { return last_loop_closures_stamped_; }
 
 void AsyncSlam::CopyToDatabase(const std::string& path, const std::function<void(bool)>& callback) {
-  std::shared_ptr<CopyToDatabaseCmd> copy_to_database_cmd = std::make_shared<CopyToDatabaseCmd>(path);
+  const auto copy_to_database_cmd = std::make_shared<CopyToDatabaseCmd>(path);
   assert(!copy_to_database_callback_);
   copy_to_database_callback_ = callback;
   TraceDebug("AttachToNewDatabaseSaveMapAndDetach reproduce_mode_=%d", reproduce_mode_ ? 1 : 0);
@@ -328,14 +302,14 @@ void AsyncSlam::CopyToDatabase(const std::string& path, const std::function<void
     copy_to_database_cmd->Execute(*this, end_frame_id, vo_pose_at_that_frame);
   } else {
     // async
-    std::shared_ptr<VOKeyframeInfo> vo_keyframe = std::make_shared<VOKeyframeInfo>(VOKeyframeInfo());
+    const auto vo_keyframe = std::make_shared<VOKeyframeInfo>(VOKeyframeInfo());
     vo_keyframe->command = copy_to_database_cmd;
     input_queue_.Push(vo_keyframe);
   }
 }
 
 bool AsyncSlam::CopyToDatabase_internal(const std::string& path) {
-  const bool status = slam_.AttachToNewDatabaseSaveMapAndDetach(path);
+  const bool status = slam_->AttachToNewDatabaseSaveMapAndDetach(path);
   if (copy_to_database_callback_) {
     copy_to_database_callback_(status);
   }
@@ -352,21 +326,6 @@ void AsyncSlam::SetLoopClosureView(std::shared_ptr<ViewManager<ViewLandmarks>> v
 // Set pose graph view
 void AsyncSlam::SetPoseGraphView(std::shared_ptr<ViewManager<ViewPoseGraph>> view) { this->pose_graph_view_ = view; }
 
-void AsyncSlam::SetAbsolutePose(const Isometry3T& pose) {
-  std::shared_ptr<SetSLAMPoseCmd> set_slam_pose_cmd = std::make_shared<SetSLAMPoseCmd>(pose);
-  if (reproduce_mode_) {
-    // sync
-    FrameId end_frame_id = static_cast<size_t>(~0UL);
-    Isometry3T vo_pose_at_that_frame = Isometry3T::Identity();
-    set_slam_pose_cmd->Execute(*this, end_frame_id, vo_pose_at_that_frame);
-  } else {
-    // async
-    std::shared_ptr<VOKeyframeInfo> vo_keyframe = std::make_shared<VOKeyframeInfo>(VOKeyframeInfo());
-    vo_keyframe->command = set_slam_pose_cmd;
-    input_queue_.Push(vo_keyframe);
-  }
-}
-
 void AsyncSlam::Run() {
 #ifdef USE_CUDA
   cudaSetDevice(0);
@@ -377,11 +336,11 @@ void AsyncSlam::Run() {
       // aborted
       return;
     }
-    Step();
+    ProcessInput();
   }
 }
 
-void AsyncSlam::Step() {
+void AsyncSlam::ProcessInput() {
   FrameId end_frame_id = InvalidFrameId;
   Isometry3T vo_pose_at_that_frame = Isometry3T::Identity();
 
@@ -424,9 +383,15 @@ void AsyncSlam::Step() {
     {
       const VOTrackData& track_data = vo_kf->track_data;
 
+      Isometry3T last_keyframe_pose;
+      int64_t last_keyframe_ts;
+      if (slam_->GetLastKeyframePoseAndTimestamp(last_keyframe_pose, last_keyframe_ts) && last_keyframe_ts > 0 &&
+          track_data.timestamp_ns < static_cast<uint64_t>(last_keyframe_ts)) {
+        continue;  // no need to add keyframe in past if slam in a future
+      }
       std::lock_guard slam_guard(slam_mutex_);
-      slam_.AddKeyframe(track_data.from_keyframe, frame_data, is_valid_image ? current_images : Images());
-      pose_estimate_slam = slam_.GetCurrentPose();
+      slam_->AddKeyframe(track_data.from_keyframe, frame_data, is_valid_image ? current_images : Images());
+      pose_estimate_slam = slam_->GetCurrentPose();
     }
     SlamStdout("'");
 
@@ -445,7 +410,7 @@ void AsyncSlam::Step() {
   }
   {
     std::lock_guard slam_guard(slam_mutex_);
-    slam_.ReduceKeyframes();
+    slam_->ReduceKeyframes();
   }
   if (!has_input) {
     return;
@@ -478,7 +443,7 @@ void AsyncSlam::Step() {
       bool lc_found = false;
       {
         std::lock_guard slam_guard(slam_mutex_);
-        slam_.DetectLoopClosure(*loop_closure_solver_, current_images, world_from_rig_guess, lc_status);
+        slam_->DetectLoopClosure(*loop_closure_solver_, current_images, world_from_rig_guess, lc_status);
         lc_found = lc_status.success;
       }
 
@@ -486,7 +451,7 @@ void AsyncSlam::Step() {
       std::shared_ptr<ViewLandmarks> lc_view = loop_close_view_ ? loop_close_view_->acquire_earliest() : nullptr;
       if (lc_view) {
         std::lock_guard slam_guard(slam_mutex_);
-        PublishLoopClosureToView(slam_.GetMap(), lc_status.landmarks, *lc_view);
+        PublishLoopClosureToView(slam_->GetMap(), lc_status.landmarks, *lc_view);
         lc_view->timestamp_ns = timestamp_ns;
         lc_view.reset();
       }
@@ -494,13 +459,13 @@ void AsyncSlam::Step() {
       // Update Landmark Statistic in spatial index
       {
         std::lock_guard slam_guard(slam_mutex_);
-        slam_.UpdateLandmarkProbeStatistics(lc_status.discarded_landmarks);
+        slam_->UpdateLandmarkProbeStatistics(lc_status.discarded_landmarks);
       }
       // Add LC edge and Add Landmark Relation to spatial index and pose graph
       if (lc_found) {
         std::lock_guard slam_guard(slam_mutex_);
-        if (slam_.ApplyLoopClosureResult(lc_status.result_pose, lc_status.result_pose_covariance,
-                                         lc_status.landmarks)) {
+        if (slam_->ApplyLoopClosureResult(lc_status.result_pose, lc_status.result_pose_covariance,
+                                          lc_status.landmarks)) {
           const LoopClosureStamped lc_pose_stamped = {frame_id, timestamp_ns, lc_status.result_pose};
           last_loop_closures_stamped_.push_back(lc_pose_stamped);
           while (last_loop_closures_stamped_.size() > max_num_last_lcs_) {
@@ -525,15 +490,20 @@ void AsyncSlam::Step() {
         // TODO: ? optimize_options.keyframes_in_sight = loop_closure_status.keyframes_in_sight;
         std::lock_guard slam_guard(slam_mutex_);
 
-        optimization_happens = slam_.OptimizePoseGraph(options_.planar_constraints, options_.max_pgo_iterations);
+        optimization_happens = slam_->OptimizePoseGraph(options_.planar_constraints);
       }
       if (optimization_happens) {
-        const Isometry3T pose_estimate_slam = slam_.GetCurrentPose();
+        const Isometry3T pose_estimate_slam = slam_->GetCurrentPose();
         TRACE_EVENT ev1 = profiler_domain_.trace_event("post optimization", profiler_color_);
         log::Value<LogFrames>("pose_slam", pose_estimate_slam);
         last_step_telemetry.pgo_status = true;
 
-        tail_.MakeShortAndFollowBody();
+        int64_t last_keyframe_ts;
+        Isometry3T last_keyframe_pose;
+        if (slam_->GetLastKeyframePoseAndTimestamp(last_keyframe_pose, last_keyframe_ts)) {
+          tail_.UpdatePoseBySLAM(last_keyframe_ts, last_keyframe_pose);
+        }
+
         SlamStdout(":");
       }
       telemetry_queue_.Push(std::make_shared<AsyncSlamLCTelemetry>(last_step_telemetry));
@@ -545,7 +515,7 @@ void AsyncSlam::Step() {
   if (landmarks_view) {
     std::lock_guard slam_guard(slam_mutex_);
     landmarks_view->landmarks.clear();
-    PublishAllLandmarksToView(slam_.GetMap(), timestamp_ns, *landmarks_view);
+    PublishAllLandmarksToView(slam_->GetMap(), timestamp_ns, *landmarks_view);
     landmarks_view.reset();
   }
 
@@ -553,17 +523,17 @@ void AsyncSlam::Step() {
   std::shared_ptr<ViewPoseGraph> pose_graph_view = pose_graph_view_ ? pose_graph_view_->acquire_earliest() : nullptr;
   if (pose_graph_view) {
     std::lock_guard slam_guard(slam_mutex_);
-    PublishPoseGraphToView(slam_.GetMap(), timestamp_ns, *pose_graph_view);
+    PublishPoseGraphToView(slam_->GetMap(), timestamp_ns, *pose_graph_view);
     pose_graph_view.reset();
   }
 
   if (input_queue_.IsEmpty()) {
     std::lock_guard slam_guard(slam_mutex_);
-    slam_.FlushActiveDatabase();
+    slam_->FlushActiveDatabase();
   }
 }
 
-void AsyncSlam::StopInternal() {
+void AsyncSlam::Shutdown() {
   input_queue_.Abort();
   telemetry_queue_.Abort();
 
@@ -572,7 +542,7 @@ void AsyncSlam::StopInternal() {
   }
   // Copy to database
   std::lock_guard slam_guard(slam_mutex_);
-  slam_.DetachDatabase();
+  slam_->DetachDatabase();
 }
 
 std::string AsyncSlam::FrameInformationString(const sof::Images& images) {
@@ -598,7 +568,6 @@ std::string AsyncSlam::FrameInformationString(const sof::Images& images) {
 
 // reset VOFrameData (if data was post to ProcessVOFrameData)
 void AsyncSlam::VO_ResetFrameData(FrameId frame_id, uint64_t timestamp_ns, VOTrackData& data) {
-  data.start_frame_id = frame_id;
   data.end_frame_id = frame_id;
   data.timestamp_ns = timestamp_ns;
   data.from_keyframe = Isometry3T::Identity();

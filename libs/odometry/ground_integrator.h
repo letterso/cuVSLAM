@@ -45,7 +45,7 @@ private:
   // _W - world
   // _G - ground
   // _A - agent - AKA camera space
-  // for _G and _A:  -z - is forward, y - is up
+  // _G / _A: OpenCV-style rig (+Z forward, +Y down); ground plane uses world Y.
   const Isometry3T W_from_G_;
   const Isometry3T G_from_W_;    // cache value
   Isometry3T pose_on_ground_G_;  // current state

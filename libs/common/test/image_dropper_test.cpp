@@ -16,10 +16,10 @@
  */
 
 #include <iostream>
+#include <random>
 
 #include "common/image_dropper.h"
 #include "common/include_gtest.h"
-
 using namespace cuvslam;
 
 TEST(ImageDropper, Demo) {
@@ -27,13 +27,11 @@ TEST(ImageDropper, Demo) {
   const uint32_t len = 79;
   const double drop_rate = 0.25;
   std::cout << "Target drop rate = " << drop_rate << std::endl;
-  std::random_device dev;
-  std::array<std::string, 3> types{"steady", "normal", "sticky"};
+  std::array<ImageDropperType, 3> types{ImageDropperType::Steady, ImageDropperType::Normal, ImageDropperType::Sticky};
   for (const auto& type : types) {
     size_t drops = 0;
     std::vector<std::string> sequences{num};
-    std::cout << type << std::endl;
-    auto dropper = CreatImageDropper(type, std::mt19937{dev()});
+    auto dropper = CreateImageDropper(type, std::mt19937(::testing::UnitTest::GetInstance()->random_seed()));
     for (uint32_t rep = 0; rep < len; rep++) {
       auto dropped_images = dropper->GetDroppedImages(drop_rate, num);
       drops += dropped_images.size();
@@ -46,10 +44,11 @@ TEST(ImageDropper, Demo) {
   }
 }
 
-using DropperSuite = testing::TestWithParam<std::tuple<std::string, double>>;
+using DropperSuite = testing::TestWithParam<std::tuple<ImageDropperType, double>>;
 
 INSTANTIATE_TEST_SUITE_P(ImageDropper, DropperSuite,
-                         testing::Combine(testing::Values("steady", "normal", "sticky"),
+                         testing::Combine(testing::Values(ImageDropperType::Steady, ImageDropperType::Normal,
+                                                          ImageDropperType::Sticky),
                                           testing::Values(0., 0.001, 0.01, 0.1, 0.25, 0.5)));
 
 TEST_P(DropperSuite, KeepsAverageDropRate) {
@@ -58,15 +57,15 @@ TEST_P(DropperSuite, KeepsAverageDropRate) {
   const int len = 100000;
   std::vector<int> drops(num, 0);
   int total_drops = 0;
-  std::random_device dev;
-  auto dropper = CreatImageDropper(type, std::mt19937{dev()});
+  auto dropper = CreateImageDropper(type, std::mt19937(::testing::UnitTest::GetInstance()->random_seed()));
   for (int rep = 0; rep < len; rep++) {
     auto dropped = dropper->GetDroppedImages(rate, num);
     for (auto i : dropped) {
       drops[i]++;
     }
   }
-  const auto type_mul = type == "sticky" ? 5. : 1.;  // sticky dropper has larger variation (due to stickiness)
+  // sticky dropper has larger variation (due to stickiness)
+  const auto type_mul = type == ImageDropperType::Sticky ? 5. : 1.;
   for (int i = 0; i < num; i++) {
     const auto max_deviation = std::sqrt(len * rate * (1 - rate)) * 6 * type_mul;  // "6 sigma"
     EXPECT_NEAR(rate * len, drops[i], max_deviation);
@@ -84,8 +83,8 @@ TEST_P(RatesSuite, SteadyDrops) {
   const auto rate = GetParam();
   const int num = 8;
   const int len = 1000;
-  std::random_device dev;
-  auto dropper = CreatImageDropper("steady", std::mt19937{dev()});
+  auto dropper =
+      CreateImageDropper(ImageDropperType::Steady, std::mt19937(::testing::UnitTest::GetInstance()->random_seed()));
   for (int rep = 0; rep < len; rep++) {
     auto dropped = dropper->GetDroppedImages(rate, num);
     EXPECT_LT(std::fabs(rate * num - dropped.size()), 1.);

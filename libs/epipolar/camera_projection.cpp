@@ -21,7 +21,8 @@ namespace cuvslam::epipolar {
 
 bool CreateCameraMatrix(const Vector3T& position, const Vector3T& lookingAt, const Vector3T& up,
                         Isometry3T& cameraMatrix) {
-  Vector3T zAxis(position - lookingAt);
+  // OpenCV camera: +Z points forward (into the scene) from the camera position toward lookingAt.
+  Vector3T zAxis(lookingAt - position);
   zAxis.normalize();
 
   Vector3T yAxis(up);

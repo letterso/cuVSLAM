@@ -17,24 +17,7 @@
 
 #include "sof/sof_config.h"
 
-#include <unordered_map>
-
 namespace cuvslam::sof {
-
-camera::MulticameraMode ParseMulticameraMode(const std::string& mode, camera::MulticameraMode default_mode) {
-  const std::unordered_map<std::string, camera::MulticameraMode> modes{
-      {"performance", camera::MulticameraMode::Performance},
-      {"precision", camera::MulticameraMode::Precision},
-      {"moderate", camera::MulticameraMode::Moderate},
-      {"manual", camera::MulticameraMode::Manual},
-  };
-  if (modes.find(mode) != modes.end()) {
-    return modes.at(mode);
-  } else {
-    TraceError("Cannot find '%s' multicam mode, defaulting to %d", mode.c_str(), default_mode);
-    return default_mode;
-  }
-}
 
 void OverrideMulticameraSettings(Settings& settings, const std::optional<camera::MulticameraMode>& multicam_mode,
                                  const camera::MulticamManualSetup& multicam_setup) {

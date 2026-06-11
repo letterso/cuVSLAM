@@ -25,27 +25,25 @@
 
 namespace cuvslam::sof {
 
-std::unique_ptr<IFeatureTracker> CreateTracker(const char* name) {
-  if (std::string("klt") == name) {
-    return std::make_unique<KLTTracker>();
-  } else if (std::string("lk") == name) {
-    return std::make_unique<LKFeatureTracker>();
-  }
-  /*else if (std::string("st2") == name)
-  {
-      return std::make_unique<STTracker>(20, 0);
-  }
-  else if (std::string("st6") == name)
-  {
-      return std::make_unique<STTracker>(0, 20);
-  }*/
-  else if (std::string("lk_horizontal") == name) {
-    return std::make_unique<LKTrackerHorizontal>();
-  } else if (std::string("klt_horizontal") == name) {
-    return std::make_unique<KLTTrackerHorizontal>();
-  }
+TrackerType ParseTrackerType(const std::string& name) {
+  if (name == "lk") return TrackerType::LK;
+  if (name == "klt") return TrackerType::KLT;
+  if (name == "lk_horizontal") return TrackerType::LKHorizontal;
+  if (name == "klt_horizontal") return TrackerType::KLTHorizontal;
+  throw std::invalid_argument{"Unknown tracker type: " + name};
+}
 
-  TraceError("Unknown CPU tracker name=%s", name);
+std::unique_ptr<IFeatureTracker> CreateTracker(TrackerType type) {
+  switch (type) {
+    case TrackerType::LK:
+      return std::make_unique<LKFeatureTracker>();
+    case TrackerType::KLT:
+      return std::make_unique<KLTTracker>();
+    case TrackerType::LKHorizontal:
+      return std::make_unique<LKTrackerHorizontal>();
+    case TrackerType::KLTHorizontal:
+      return std::make_unique<KLTTrackerHorizontal>();
+  }
   return nullptr;
 }
 

@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -38,6 +39,9 @@ enum class MulticameraMode {
 };
 
 using MulticamManualSetup = std::vector<std::vector<CameraId>>;
+
+MulticameraMode ParseMulticameraMode(const std::string& mode,
+                                     MulticameraMode default_mode = MulticameraMode::Performance);
 
 // Building a camera graph without the need for manual assumption hard-coding of the camera configuration.
 // It leverages camera intrinsic, distortion and extrinsic calibrations in order to check overlapping between

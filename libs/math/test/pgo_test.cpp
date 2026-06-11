@@ -24,7 +24,6 @@
 #include "common/vector_3t.h"
 #include "math/pgo.h"
 #include "math/twist.h"
-
 namespace test::math {
 using namespace cuvslam;
 using namespace cuvslam::math;
@@ -53,8 +52,7 @@ Isometry3T random_pose(std::mt19937& gen, const Isometry3T& mean, const Matrix6T
 }  // namespace
 
 TEST(PGO, PGOTest) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
 
   const size_t num_poses = 300;
   const size_t num_lcs = 20;
@@ -140,8 +138,7 @@ Vector3T velocity_on_the_plane(const Vector3T& plane_norm) {
 }  // namespace
 
 TEST(PGO, DISABLED_PGOTestPlanar) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
 
   const size_t num_poses = 300;
   const size_t num_lcs = 20;

@@ -13,7 +13,7 @@
 # of the software or derivative works thereof, you agree to be bound by this License.
 
 import numpy as np
-from scipy.ndimage import zoom
+from scipy.ndimage import zoom, gaussian_filter
 import cuvslam as vslam
 
 def generate_stereo_camera(width: int, height: int, baseline: float = 0.25) -> list[vslam.Camera]:
@@ -32,13 +32,12 @@ def generate_stereo_camera(width: int, height: int, baseline: float = 0.25) -> l
 
 class ImageGenerator:
     """
-    Generate synthetic images for testing.
-    The pattern is not ideal and tracking on it may fail, tracking works on each step with 30 steps,
-    or on every 2nd step with 60 steps. Tested with 2 cameras 640x480.
+    Generate synthetic images for testing using multi-scale random noise.
+    The pattern provides spatially unique features for both tracking and localization.
+    Tested with 2 cameras 640x480.
     """
 
     SHIFT = 30            # Shift of pattern in pixels on pre-scaled images between cameras
-    SQUARE_SIZE = 40      # Size of squares in checkerboard pattern
     PRESCALE = 3          # By how much original image is bigger than tracked images
     SCALE = 1 / PRESCALE  # Zoom factor to get tracked images from original image
 
@@ -55,18 +54,17 @@ class ImageGenerator:
         W = int(cameras[0].size[0]) # TODO: remove type hint when IntelliSense is fixed
         H = int(cameras[0].size[1])
         h, w = H * ImageGenerator.PRESCALE, W * ImageGenerator.PRESCALE + ImageGenerator.SHIFT
-        base_image = np.zeros((h, w), dtype=np.uint8)
-        f = float(cameras[0].focal[0])
 
-        # Add vertical offset to the checkerboard pattern to avoid false matches
-        square_size = self.SQUARE_SIZE
-        for i in range(0, h, 2*square_size):
-            for j in range(0, w, 2*square_size):
-                col = j // (2*square_size)
-                offset = (col * col * 4) % (H // 2)
-                base_image[i + offset:i + offset + square_size, j:j + square_size] = 255
+        # Multi-scale smoothed random noise thresholded to create sharp corners.
+        # Thresholding creates high-contrast black/white regions with many corners
+        # at boundaries — ideal for feature detectors used by SLAM.
+        rng = np.random.RandomState(42)
+        base = np.zeros((h, w), dtype=np.float64)
+        for sigma in [8, 20, 50]:
+            base += gaussian_filter(rng.randn(h, w), sigma=sigma)
+        base = ((base > 0).astype(np.uint8) * 255)
 
-        self.cropped = [base_image[:, :-ImageGenerator.SHIFT], base_image[:, ImageGenerator.SHIFT:]]
+        self.cropped = [base[:, :-ImageGenerator.SHIFT], base[:, ImageGenerator.SHIFT:]]
 
 
     def _calc_z_and_scale(self, step) -> tuple[float, float]:

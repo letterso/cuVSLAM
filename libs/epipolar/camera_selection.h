@@ -29,8 +29,9 @@
 namespace cuvslam::epipolar {
 
 namespace FrustumProperties {
-const float MINIMUM_HITHER = -0.1f;
-}
+/// Minimum positive depth (camera +Z forward, OpenCV) for a point to be considered in front of the camera.
+const float MINIMUM_HITHER = 0.1f;
+}  // namespace FrustumProperties
 
 enum class TriangulationState { None, Triangulated, AlmostParallel };
 
@@ -111,8 +112,8 @@ public:
 
 using Ray3T = Ray3<float>;
 
-inline bool IsPointInLocalSpaceNegativeZ(const Vector3T& point, const Isometry3T& toLocalSpace) {
-  return (toLocalSpace * point).z() < FrustumProperties::MINIMUM_HITHER;
+inline bool IsPointInFrontInLocalSpace(const Vector3T& point, const Isometry3T& toLocalSpace) {
+  return (toLocalSpace * point).z() > FrustumProperties::MINIMUM_HITHER;
 }
 
 inline bool IntersectRaysInReferenceSpace(const Isometry3T& transform, const Vector3T& direction1,
@@ -122,8 +123,8 @@ inline bool IntersectRaysInReferenceSpace(const Isometry3T& transform, const Vec
   // reference to the hypothetical camera2 frame of reference.
   const Ray3T ray2(transform.translation(), transform.linear() * direction2);
   return ray2.Intersect(Ray3T(Vector3T::Zero(), direction1), point3DInReferenceSpace) &&
-         IsPointInLocalSpaceNegativeZ(point3DInReferenceSpace, Isometry3T::Identity()) &&
-         IsPointInLocalSpaceNegativeZ(point3DInReferenceSpace, transform.inverse());
+         IsPointInFrontInLocalSpace(point3DInReferenceSpace, Isometry3T::Identity()) &&
+         IsPointInFrontInLocalSpace(point3DInReferenceSpace, transform.inverse());
 }
 
 inline size_t CountPointsInFrontOfCameras(const Vector2TPairVectorCIt start, const Vector2TPairVectorCIt end,
@@ -140,9 +141,9 @@ inline bool OptimalTriangulation(const Isometry3T& transform, const Vector2T& x1
                                  float& parallelMeasure, TriangulationState& ts) {
   ts = TriangulationState::None;
 
-  // transform that we pass here is our cam1.inverse() * cam2, i.e. transfer of CV (cam2.inverse() cam2 (next camera)
-  // into current CV cam1 (=cam1.inverse(), where cam1 is cuVSLAM camera). I.e. essential below is Transpose of what
-  // we, in cuVSLAM, get as Essential from 2D points.
+  // `transform` is cam1_from_cam2 (same as rig: camera_from_rig[c1]*camera_from_rig[c2].inverse()): p_c1 = T * p_c2.
+  // x1,x2 are normalized coords (OpenCV pinhole: +Z forward). E = [t]_× R from essential(T); epipolar c = x1^T E x2.
+  // loc3d is expressed in camera-1 coordinates; cheirality uses z>0 in cam1 and in cam2 (transform.inverse()*loc3d).
 
   const Vector3T x1h = x1.homogeneous();
   const Vector3T x2h = x2.homogeneous();
@@ -234,8 +235,8 @@ inline bool OptimalTriangulation(const Isometry3T& transform, const Vector2T& x1
   //(void)atInfinity;
   // assert((loc3d / scaleFactor).norm() < atInfinity / scaleFactor);
 
-  ts = (loc3d.z() < FrustumProperties::MINIMUM_HITHER &&
-        (transform.inverse() * loc3d).z() < FrustumProperties::MINIMUM_HITHER && loc3d.norm() > epsilon())
+  ts = (loc3d.z() > FrustumProperties::MINIMUM_HITHER &&
+        (transform.inverse() * loc3d).z() > FrustumProperties::MINIMUM_HITHER && loc3d.norm() > epsilon())
            ? ((IsVectorsParallel(x1m, rotation * x2m, parallelMeasure)) ? TriangulationState::AlmostParallel
                                                                         : TriangulationState::Triangulated)
            : TriangulationState::None;

@@ -18,12 +18,28 @@
 #include "camera/frustum_intersection_graph.h"
 
 #include <queue>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "common/log.h"
 #include "common/vector_3t.h"
 
 namespace cuvslam::camera {
+
+MulticameraMode ParseMulticameraMode(const std::string& mode, MulticameraMode default_mode) {
+  const std::unordered_map<std::string, MulticameraMode> modes{
+      {"performance", MulticameraMode::Performance},
+      {"precision", MulticameraMode::Precision},
+      {"moderate", MulticameraMode::Moderate},
+      {"manual", MulticameraMode::Manual},
+  };
+  auto it = modes.find(mode);
+  if (it != modes.end()) {
+    return it->second;
+  }
+  TraceError("Cannot find '%s' multicam mode, defaulting to %d", mode.c_str(), default_mode);
+  return default_mode;
+}
 
 namespace {
 
@@ -35,8 +51,8 @@ std::vector<CameraGraphNode> BuildCameraGraph(const camera::Rig& rig) {
   int total_number_of_points = 1000;
   // UV is back-projected to the minimal and maximal depth d_min, d_max.
   // These values should establish the effective depth range for our datasets and HAWK, Realsense stereo pairs.
-  float d_min = -2;
-  float d_max = -4;
+  float d_min = 2;
+  float d_max = 4;
   float intersected_num_points_ratio_threshold = 0.5;
   int side_number_of_points = static_cast<int>(sqrt(total_number_of_points));
   for (int32_t cam_id_i = 0; cam_id_i < rig.num_cameras; cam_id_i++) {
@@ -58,18 +74,14 @@ std::vector<CameraGraphNode> BuildCameraGraph(const camera::Rig& rig) {
             continue;
           };
           // 3d point
-          Vector3T point_d_min_i;
-          Vector3T point_d_max_i;
-          point_d_min_i.topRows(2) = xy * d_min;
-          point_d_min_i[2] = d_min;
-          point_d_max_i.topRows(2) = xy * d_max;
-          point_d_max_i[2] = d_max;
+          const Vector3T point_d_min_i(xy.x() * d_min, xy.y() * d_min, d_min);
+          const Vector3T point_d_max_i(xy.x() * d_max, xy.y() * d_max, d_max);
 
           // project 3d point to camera j plane
           Isometry3T T_i_j = rig.camera_from_rig[cam_id_i] * rig.camera_from_rig[cam_id_j].inverse();
           Vector3T point_d_min_j = T_i_j * point_d_min_i;
           Vector3T point_d_max_j = T_i_j * point_d_max_i;
-          if (point_d_min_j.z() >= 0.f || point_d_max_j.z() >= 0.f) {
+          if (point_d_min_j.z() <= 0.f || point_d_max_j.z() <= 0.f) {
             continue;
           }
           Vector2T xy_d_min_j = point_d_min_j.topRows(2) / point_d_min_j.z();

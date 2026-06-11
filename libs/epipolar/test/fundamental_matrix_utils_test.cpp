@@ -111,8 +111,8 @@ TEST_F(FundamentalMatrixUtilsTest, LastSingularValueSmall) {
 }
 
 TEST_F(FundamentalMatrixUtilsTest, PlanarHomography) {
-  points3DMinRange_ = Vector3T(3, 2, -16);
-  points3DMaxRange_ = Vector3T(13, 10, -16);
+  points3DMinRange_ = Vector3T(3, 2, 16);
+  points3DMaxRange_ = Vector3T(13, 10, 16);
 
   camera1_ = Translation3T(Vector3T::Random()) * Rotation3T(Vector3T::Random() * 0.5f, AngleUnits::Radian);
   camera2_ =
@@ -169,8 +169,8 @@ TEST_F(FundamentalMatrixUtilsTest, RotationHomography) {
                                                               common::CalculateRotationFromSVD(camera2_.matrix()));
   (void)testRot;
 
-  points3DMinRange_ = Vector3T(-5, -5, -15);
-  points3DMaxRange_ = Vector3T(5, 5, -5);
+  points3DMinRange_ = Vector3T(-5, -5, 5);
+  points3DMaxRange_ = Vector3T(5, 5, 15);
 
   SetupPoints();
 

@@ -21,7 +21,7 @@
 
 #include "common/vector_3t.h"
 
-namespace test::utils {
+namespace test {
 using namespace cuvslam;
 
 ///-------------------------------------------------------------------------------------------------
@@ -38,8 +38,10 @@ using namespace cuvslam;
 template <typename _Validador>
 Vector3TVector GeneratePointsInCube(const size_t numPoints, const Vector3T& minRange, const Vector3T& maxRange,
                                     const _Validador validator) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  // std::rand() is seeded per-test; each call advances its state, so repeated
+  // calls to GeneratePointsInCube within the same test get different seeds.
+  auto seed = std::rand();
+  std::mt19937 gen(seed);
   std::uniform_real_distribution uniformDistX(minRange.x(), maxRange.x());
   std::uniform_real_distribution uniformDistY(minRange.y(), maxRange.y());
   std::uniform_real_distribution uniformDistZ(minRange.z(), maxRange.z());
@@ -63,4 +65,4 @@ inline Vector3TVector GeneratePointsInCube(size_t numPoints, const Vector3T& min
   return GeneratePointsInCube(numPoints, minRange, maxRange, [](const Vector3T&) -> bool { return true; });
 }
 
-}  // namespace test::utils
+}  // namespace test

@@ -16,6 +16,7 @@
  */
 
 #pragma once
+
 #include "odometry/svo_config.h"
 #include "profiler/profiler.h"
 #include "profiler/profiler_enable.h"
@@ -32,14 +33,11 @@ public:
   void reset();
 
   bool select(const TracksVector& cur_frame_tracks, const int64_t current_timestamp_ns,
-              const TracksVector& last_kf_tracks, const int64_t last_kf_timestamp);
-  // void set_kf(const TracksVector& cur_frame_tracks);
+              const TracksVector& last_kf_tracks, const int64_t last_kf_timestamp,
+              const odom::KeyFrameSettings& kf_settings);
 
 private:
-  odom::KeyFrameSettings kf_settings_;
   bool first_kf_selected_ = false;
-  // TracksVector last_kf_tracks_;           // expected to be ordered by TrackeId
-  // int64_t last_kf_timestamp_ = 0;
 
   // profiler
   profiler::VioProfiler::DomainHelper profiler_domain_ = profiler::VioProfiler::DomainHelper("VIO");

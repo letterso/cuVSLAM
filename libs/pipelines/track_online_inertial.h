@@ -29,6 +29,7 @@
 #include "common/unaligned_types.h"
 #include "common/vector_2t.h"
 #include "common/vector_3t.h"
+#include "imu/imu_sba.h"
 #include "imu/imu_sba_problem.h"
 #include "imu/inertial_optimization.h"
 #include "imu/linear_filter.h"
@@ -69,6 +70,13 @@ public:
 
   std::optional<Vector3T> get_gravity() const;
 
+  struct ImuState {
+    Vector3T velocity;
+    Vector3T gyro_bias;
+    Vector3T acc_bias;
+  };
+  std::optional<ImuState> GetImuState() const;
+
 private:
   imu::ImuMeasurementStorage imu_storage_;
   imu::ImuCalibration calib_;
@@ -87,6 +95,7 @@ private:
   std::unique_ptr<map::ServiceBase> sba_service_;
 
   sba_imu::InertialOptimizer optimizer_;
+  sba_imu::IMUBundlerCpuFixedVel imu_init_bundler_;
 
   InertialPnP inertial_pnp_;
   pnp::PNPSolver stereo_pnp_;
@@ -96,6 +105,7 @@ private:
   StateMachine imu_sm_;
 
   bool is_first_run = true;
+  bool enable_imu_sba_init_ = true;
 
   sba_imu::Pose curr_pose;  // keep valid preintegration
   sba_imu::Pose prev_pose;  // keep valid preintegration

@@ -43,6 +43,7 @@ public:
   void add_imu_measurement(const imu::ImuMeasurement& m);
 
   std::optional<Vector3T> get_gravity() const;
+  std::optional<pipelines::SolverSfMInertial::ImuState> GetImuState() const;
 
 private:
   imu::ImuCalibration calib_;

@@ -131,9 +131,10 @@ static void DoMonoTrack(const std::string& edexFile, std::string outputFolder, s
       prev_image = prev_it->second;
     }
 
-    sof->track({curr_sources[0], curr_image_ptrs[0]}, prev_image, Isometry3T::Identity(), &(masks_sources[0]));
+    sof->track({curr_sources[0], curr_image_ptrs[0]}, prev_image, Isometry3T::Identity(), sof_settings,
+               &(masks_sources[0]));
     sof::FrameState state;
-    const auto& tracks_vector = sof->finish(state);
+    const auto& tracks_vector = sof->finish(state, sof_settings);
     if (state != sof::FrameState::Key) {
       continue;
     }

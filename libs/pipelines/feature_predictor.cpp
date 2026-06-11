@@ -46,9 +46,8 @@ void FeaturePredictor::predictObservations(const Isometry3T& world_from_rig, int
     const Vector3T camPoint = cameraFromWorld * point_3d;
 
     // TODO: (msmirnov) make this a parameter
-    if (camPoint.z() < 0.f) {
-      // Project into the camera.
-      // In cuVSLAM "denormalize" means project, "normalize" - unproject
+    if (camPoint.z() > 0.f) {
+      // Project into the camera (OpenCV +Z forward). "denormalize" = project to pixels, "normalize" = unproject.
       Vector2T xy(camPoint.x() / camPoint.z(), camPoint.y() / camPoint.z());
       Vector2T uv;
       if (cameraModel->denormalizePoint(xy, uv)) {

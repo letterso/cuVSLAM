@@ -19,6 +19,7 @@
 
 #include "common/rotation_utils.h"
 #include "epipolar/camera_projection.h"
+#include "epipolar/camera_selection.h"
 #include "math/robust_cost_function.h"
 
 namespace {
@@ -345,8 +346,8 @@ bool MonoSBASolver::getFailed() const { return failed_; }
 Matrix6T MonoSBASolver::getCovariance() const { return covariance_; }
 
 void MonoSBASolver::filterHitherPoints() {
-  // Also see FrustumProperties::MINIMUM_HITHER
-  static const float hither = -0.1f;
+  // Also see FrustumProperties::MINIMUM_HITHER (+Z forward, OpenCV)
+  static const float hither = cuvslam::epipolar::FrustumProperties::MINIMUM_HITHER;
 
   for (Track& track : tracks_) {
     if (track.skip) {
@@ -356,7 +357,7 @@ void MonoSBASolver::filterHitherPoints() {
     for (size_t idxFrame : track.idxFrames) {
       const Vector3T loc3dInCamCoord = frames_[idxFrame].a.transform() * track.b;
 
-      if (loc3dInCamCoord.z() > hither) {
+      if (loc3dInCamCoord.z() < hither) {
         track.skip = true;
         break;
       }

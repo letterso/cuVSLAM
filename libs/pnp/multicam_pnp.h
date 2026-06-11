@@ -43,7 +43,7 @@ struct PNPSettings {
   bool filter_new_observations = true;
   size_t max_obs_per_camera = 270;
 
-  float point_z_thresh = -0.01f;
+  float point_z_thresh = 0.01f;
 
   bool verbose = false;
 

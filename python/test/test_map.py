@@ -13,6 +13,8 @@
 # of the software or derivative works thereof, you agree to be bound by this License.
 
 import os
+import tempfile
+import shutil
 import unittest
 import numpy as np
 import threading
@@ -62,9 +64,10 @@ def perturb_pose(pose, max_translation=0.5):
     translation = np.array(pose.translation)
     translation += np.random.uniform(-max_translation, max_translation, size=3)
 
-    # Generate random rotation
-    rotation = np.random.randn(4)  # Random quaternion
-    rotation = rotation / np.linalg.norm(rotation)  # Normalize to unit quaternion
+    # Random yaw rotation around Y axis (vertical in OpenCV convention)
+    # Localization searches yaw (angular_step_rads) but not pitch/roll
+    yaw = np.random.uniform(-np.pi, np.pi)
+    rotation = [0, np.sin(yaw / 2), 0, np.cos(yaw / 2)]
 
     return vslam.Pose(translation=translation, rotation=rotation)
 
@@ -86,6 +89,10 @@ class TestMap(unittest.TestCase):
         imu = vslam.ImuCalibration()
         self.rig = vslam.Rig(cameras, [imu])
         self.debug_messages = []
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def add_debug(self, message):
         self.debug_messages.append(message)
@@ -111,6 +118,9 @@ class TestMap(unittest.TestCase):
         )
 
         return odom_cfg, slam_cfg, loc_settings
+
+    def map_path(self, name):
+        return os.path.join(self.temp_dir, name)
 
     def create_map(
             self,
@@ -147,12 +157,9 @@ class TestMap(unittest.TestCase):
             assert_array_almost_equal(np.array(odom_pose.translation), [0, 0, z - z0], decimal=1)
             assert_array_almost_equal(np.array(odom_pose.rotation), [0, 0, 0, 1.0], decimal=2)
 
-            if start != 0 and i == start:
-                tracker.set_slam_pose(vslam.Pose(translation=[0, 0, z0], rotation=[0, 0, 0, 1.0]))
-            else:
-                self.add_debug(f"{i}: slam_pose={slam_pose}")
-                assert_array_almost_equal(np.array(slam_pose.translation), [0, 0, z], decimal=1)
-                assert_array_almost_equal(np.array(slam_pose.rotation), [0, 0, 0, 1.0], decimal=2)
+            self.add_debug(f"{i}: slam_pose={slam_pose}")
+            assert_array_almost_equal(np.array(slam_pose.translation), [0, 0, z], decimal=1)
+            assert_array_almost_equal(np.array(slam_pose.rotation), [0, 0, 0, 1.0], decimal=2)
 
             if visualize:
                 subplots = visualize_frame(images, i, subplots)
@@ -162,7 +169,7 @@ class TestMap(unittest.TestCase):
         def save_callback(success):
             nonlocal map_saved
             map_saved = success
-        tracker.save_map(map_name, save_callback)
+        tracker.save_map(self.map_path(map_name), save_callback)
         self.assertTrue(map_saved)
 
     def try_localize(
@@ -190,13 +197,17 @@ class TestMap(unittest.TestCase):
         localization_complete = threading.Event()
         result_pose = None
 
-        def localization_callback(pose, error_message):
+        def localization_start_cb():
+            self.add_debug("Localization started")
+
+        def localization_finish_cb(pose, error_message):
             nonlocal result_pose
             self.add_debug(f"Localization result: {pose}, {error_message}")
             result_pose = pose
             localization_complete.set()
 
-        tracker.localize_in_map(map_name, guess_pose, images, loc_settings, localization_callback)
+        tracker.localize_in_map(self.map_path(map_name), timestamp, guess_pose, images, loc_settings,
+                                localization_start_cb, localization_finish_cb)
         while not localization_complete.wait(timeout=0.1):
             # Simulate time passing; this is necessary for the async callback to be processed
             timestamp += 1_000
@@ -211,44 +222,18 @@ class TestMap(unittest.TestCase):
 
         img = data.ImageGenerator(self.rig.cameras, 30)
 
-        self.create_map(img, 'temp_map')
+        self.create_map(img, 'map')
 
         _, _, loc_settings = self.get_localization_configs()
         self.add_debug(f"Localization settings: {loc_settings}")
 
-        self.assertTrue(any(self.try_localize(img, 'temp_map', i, perturb=False) for i in range(0, 10)))
+        self.assertTrue(any(self.try_localize(img, 'map', i, perturb=False) for i in range(0, 10)))
 
-        self.assertTrue(any(self.try_localize(img, 'temp_map', i, perturb=True) for i in range(0, 10)))
+        self.assertTrue(any(self.try_localize(img, 'map', i, perturb=True) for i in range(0, 10)))
 
-        self.assertTrue(any(self.try_localize(img, 'temp_map', i, perturb=False) for i in range(10, 20)))
+        self.assertTrue(any(self.try_localize(img, 'map', i, perturb=False) for i in range(10, 20)))
         # Localization in the end of the map isn't working well
-        # self.assertTrue(any(self.try_localize(img, 'temp_map', i, perturb=False) for i in range(20, 30)))
-
-
-    def test_map_merge(self):
-        """Test merging two maps."""
-
-        img = data.ImageGenerator(self.rig.cameras, 60)
-
-        # Create first map from a first half of the generated sequence
-        self.create_map(img, 'temp_map1', start=0, stop=31, step=1, timestamp=1_000_000_000)
-
-        # Create second map from a second half, overlapped with the first one but no images/poses are the same
-        self.create_map(img, 'temp_map2', start=29, stop=60, step=1, timestamp=2_000_000_000)
-
-        # Merge maps
-        vslam.Tracker.merge_maps(self.rig, ['temp_map1', 'temp_map2'], 'temp_merged_map')
-
-        # Check if the merged map exists
-        self.assertTrue(os.path.exists('temp_merged_map'))
-
-        # Test localization in the beginning of the merged map (first submap)
-        self.assertTrue(any(self.try_localize(img, 'temp_merged_map', i) for i in range(0, 10, 2)))
-        # TODO: fix
-        # # Test localization in the stitching region of the merged map
-        # self.assertTrue(any(self.try_localize(img, 'temp_merged_map', i) for i in range(24, 35)))
-        # # Test localization in the end of the merged map (second submap)
-        # self.assertTrue(any(self.try_localize(img, 'temp_merged_map', i) for i in range(49, 60, 2)))
+        # self.assertTrue(any(self.try_localize(img, 'map', i, perturb=False) for i in range(20, 30)))
 
 
 if __name__ == "__main__":

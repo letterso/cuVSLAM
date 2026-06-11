@@ -26,11 +26,10 @@
 
 #include "common/camera_id.h"
 #include "common/thread_safe_queue.h"
-
+#include "cuvslam/cuvslam2.h"
 #include "odometry/ivisual_odometry.h"
-
 #include "slam/async_slam/tail.h"
-#include "slam/common/slam_common.h"
+#include "slam/localizer/localizer.h"
 #include "slam/slam/loop_closure_solver/iloop_closure_solver.h"
 #include "slam/slam/slam.h"
 #include "slam/view/view_landmarks.h"
@@ -40,10 +39,9 @@
 namespace cuvslam::slam {
 
 struct AsyncSlamOptions {
-  std::string map_cache_path = "";  // if non-empty, connect to LMDB at this path
+  std::string map_cache_path;  // if non-empty, connect to LMDB at this path
   bool use_gpu = true;
   bool reproduce_mode = true;            // allow to repeat results: ransac.seed(0), sync=true
-  size_t max_pgo_iterations = 0;         //
   bool pose_for_frame_required = false;  // set true for calling GetPoseForFrame()
   int max_pose_graph_nodes = 0;          // SLAM: limit of the node count in the pose graph
   uint64_t throttling_time_ms = 0;
@@ -72,64 +70,32 @@ struct LoopClosureStamped {
 
 class AsyncSlam {
 public:
-  // Workflow
-  struct VOTrackData {
-    FrameId start_frame_id;
-    FrameId end_frame_id;
-    uint64_t timestamp_ns;
-    Isometry3T from_keyframe = Isometry3T::Identity();
-  };
-
-  // reset VOFrameData (if data was post to ProcessVOFrameData)
-  static void VO_ResetFrameData(FrameId frame_id, uint64_t timestamp_ns, VOTrackData& track_data);
-
-  // Increment FrameData value after tracker.Solve()
-  // pose_estimate_rel - relative to previous position
-  static void VO_IncrementFrameData(FrameId frame_id, uint64_t timestamp_ns, const Isometry3T& pose_estimate_rel,
-                                    VOTrackData& track_data);
-
   // cameras - list of camera indexes from rig to be used in slam
   AsyncSlam(const camera::Rig& rig, const std::vector<CameraId>& cameras, const AsyncSlamOptions& options);
   ~AsyncSlam();
 
+  void ProcessInputSynchronously();  // for "blocking" = reproduce_mode without launching background thread
+  void Stop();
+
   void TrackResult(FrameId frameId, int64_t timestamp_ns, const odom::IVisualOdometry::VOFrameStat& stat,
                    const sof::Images& images, const Isometry3T& delta, Isometry3T* slam_pose);
 
-  struct LocalizationResult {
-    std::shared_ptr<LocalizerAndMapper> slam_from;
-    VOTrackData track_data;
-    Isometry3T pose_in_frame;
-    KeyFrameId from_keyframe_id;
-    Isometry3T pose_in_slam;
-    Matrix6T pose_in_slam_covariance;
+  void LocalizeInMap(const std::string_view& folder_name, int64_t timestamp_ns, const Isometry3T& guess_pose,
+                     const sof::Images& images, const Slam::LocalizationSettings& settings,
+                     Slam::LocalizeStartCB start_cb, Slam::LocalizeFinishCB finish_cb);
 
-    bool is_valid() const { return slam_from ? true : false; }
-  };
-
-  // If Localizator have found the pose
-  void LocalizedInSlam(const LocalizationResult& localization_result);
-
-  bool GetSlamPose(Isometry3T& slam_pose) const;
-
-  void MainLoopStep();
-
-  void Stop();
+  Isometry3T GetSlamPose() const;
 
   // could be blocked by slam thread
   bool GetPoseForFrame(FrameId frameId, Isometry3T& pose) const;
-
   // could be blocked by slam thread
   bool GetPosesForAllFrames(std::map<uint64_t, storage::Isometry3<float>>& frames) const;
 
-  const VOTrackData& GetVOTrackData() const;
-
   bool GetLastTelemetry(AsyncSlamLCTelemetry& telemetry) const;
+  const std::list<LoopClosureStamped>& GetLastLoopClosuresStamped();
 
   void CopyToDatabase(const std::string& path, const std::function<void(bool)>& callback = nullptr);
 
-  const std::list<LoopClosureStamped>& GetLastLoopClosuresStamped();
-
-public:
   // Set landmarks view
   void SetLandmarksView(std::shared_ptr<ViewManager<ViewLandmarks>> view);
   // Set loop closure view
@@ -137,18 +103,19 @@ public:
   // Set pose graph view
   void SetPoseGraphView(std::shared_ptr<ViewManager<ViewPoseGraph>> view);
 
-  void SetAbsolutePose(const Isometry3T& pose);
-
-protected:
-  static std::string FrameInformationString(const sof::Images& images);
-
 private:
+  struct VOTrackData {
+    FrameId end_frame_id;
+    uint64_t timestamp_ns;
+    Isometry3T from_keyframe = Isometry3T::Identity();
+  };
+
   bool reproduce_mode_ = false;
   camera::Rig rig_;
   const std::vector<CameraId> cameras_;
   AsyncSlamOptions options_;
   mutable std::mutex slam_mutex_;
-  LocalizerAndMapper slam_;                                  // should be protected by slam_mutex_
+  std::unique_ptr<LocalizerAndMapper> slam_;                 // should be protected by slam_mutex_
   Tail tail_;                                                // thread-safe
   std::unique_ptr<ILoopClosureSolver> loop_closure_solver_;  // should be accessed from slam thread only
   std::map<FrameId, VOTrackData> trajectory_;
@@ -164,7 +131,7 @@ private:
 
   class ICommand {
   public:
-    virtual ~ICommand(){};
+    virtual ~ICommand() = default;
     virtual void Execute(AsyncSlam& async_slam, FrameId frame_id, const Isometry3T& vo_pose_at_that_frame) = 0;
   };
 
@@ -180,42 +147,39 @@ private:
   std::mutex processing_images_mutex_;
   Images processing_images_;  // should be protected by processing_images_mutex_
 
-  class UnionAfterLocalizationCmd : public ICommand {
+  class LocalizeInMapCmd : public ICommand {
   public:
-    LocalizationResult localization_result_;
-    UnionAfterLocalizationCmd(const LocalizationResult& localization_result)
-        : localization_result_(localization_result) {}
-    ~UnionAfterLocalizationCmd() override{};
-    void Execute(AsyncSlam& async_slam, FrameId, const Isometry3T&) override {
-      Isometry3T slam_to_head;
-      async_slam.LocalizedInSlam_internal(localization_result_, slam_to_head);
-      async_slam.tail_.MakeShortAndFollowBody();
-    }
+    LocalizeInMapCmd(const std::string_view& folder_name, int64_t timestamp_ns, const Isometry3T& guess_pose,
+                     const sof::Images& images, const Slam::LocalizationSettings& settings,
+                     Slam::LocalizeStartCB start_cb, Slam::LocalizeFinishCB finish_cb);
+
+    ~LocalizeInMapCmd() override = default;
+    void Execute(AsyncSlam& async_slam, FrameId, const Isometry3T&) override;
+
+  private:
+    const std::string folder_name_;
+    const int64_t timestamp_ns_;
+    const Isometry3T guess_pose_;
+    const sof::Images images_;
+    const Slam::LocalizationSettings settings_;
+    Slam::LocalizeStartCB start_cb_;
+    Slam::LocalizeFinishCB finish_cb_;
   };
+
   class CopyToDatabaseCmd : public ICommand {
   public:
     std::string path_;
-    CopyToDatabaseCmd(const std::string& path) : path_(path) {}
-    ~CopyToDatabaseCmd() override{};
+    explicit CopyToDatabaseCmd(const std::string& path) : path_(path) {}
+    ~CopyToDatabaseCmd() override = default;
+
     void Execute(AsyncSlam& async_slam, FrameId, const Isometry3T&) override {
       async_slam.CopyToDatabase_internal(path_);
-    }
-  };
-  class SetSLAMPoseCmd : public ICommand {
-  public:
-    Isometry3T set_slam_pose_;
-    SetSLAMPoseCmd(const Isometry3T& set_slam_pose) : set_slam_pose_(set_slam_pose){};
-    ~SetSLAMPoseCmd() override{};
-    void Execute(AsyncSlam& async_slam, FrameId, const Isometry3T&) override {
-      std::lock_guard slam_guard(async_slam.slam_mutex_);
-      async_slam.slam_.SetAbsolutePose(set_slam_pose_);
-      async_slam.tail_.MakeShortAndFollowBody();
     }
   };
 
   ThreadSafeQueue<std::shared_ptr<VOKeyframeInfo>> input_queue_;
   ThreadSafeQueue<std::shared_ptr<AsyncSlamLCTelemetry>> telemetry_queue_;
-  // telemetry of last Step()
+  // telemetry of last ProcessInput()
   AsyncSlamLCTelemetry last_telemetry_;
 
   // set max size for list of the last loop closure poses with timestamps and frame_ids
@@ -231,14 +195,22 @@ private:
   std::function<void(bool)> copy_to_database_callback_;
 
   void Run();
-  void Step();
-  void StopInternal();
+  void Shutdown();
 
-  // If Localizator have found the pose
-  void LocalizedInSlam_internal(const LocalizationResult& lr, Isometry3T& slam_to_head);
+  void ProcessInput();
 
   // Copy to database
   bool CopyToDatabase_internal(const std::string& path);
+
+  // reset VOFrameData (if data was post to ProcessVOFrameData)
+  static void VO_ResetFrameData(FrameId frame_id, uint64_t timestamp_ns, VOTrackData& track_data);
+
+  // Increment FrameData value after tracker.Solve()
+  // pose_estimate_rel - relative to previous position
+  static void VO_IncrementFrameData(FrameId frame_id, uint64_t timestamp_ns, const Isometry3T& pose_estimate_rel,
+                                    VOTrackData& track_data);
+
+  static std::string FrameInformationString(const sof::Images& images);
 };
 
 }  // namespace cuvslam::slam

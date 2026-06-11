@@ -122,6 +122,155 @@ class TestTracking(unittest.TestCase):
                             #         self.assertAlmostEqual(gravity[1], 9.81, msg=f"iteration {i}")
 
 
+    def test_get_observations_and_landmarks(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        cfg.enable_observations_export = True
+        cfg.enable_landmarks_export = True
+        tracker = vslam.Tracker(self.rig, cfg)
+
+        # Track a few frames to build up features
+        for i in range(5):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        # get_last_observations returns a list for each camera
+        for cam_idx in range(self.num_cameras):
+            obs = tracker.get_last_observations(cam_idx)
+            self.assertIsInstance(obs, list)
+            if obs:
+                self.assertIsInstance(obs[0], vslam.Observation)
+                self.assertIsInstance(obs[0].id, int)
+                self.assertIsInstance(obs[0].u, float)
+                self.assertIsInstance(obs[0].v, float)
+
+        # get_last_landmarks returns a list
+        landmarks = tracker.get_last_landmarks()
+        self.assertIsInstance(landmarks, list)
+        if landmarks:
+            self.assertIsInstance(landmarks[0], vslam.Landmark)
+
+    def test_get_final_landmarks(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        cfg.enable_final_landmarks_export = True
+        tracker = vslam.Tracker(self.rig, cfg)
+
+        for i in range(5):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        final = tracker.get_final_landmarks()
+        self.assertIsInstance(final, dict)
+
+    def test_get_gravity_non_inertial(self):
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        tracker = vslam.Tracker(self.rig, cfg)
+
+        images = [np.zeros((480, 640), dtype=np.uint8) for _ in range(self.num_cameras)]
+        tracker.track(1000, images)
+
+        # get_last_gravity raises ValueError when IMU fusion is disabled
+        with self.assertRaises(ValueError):
+            tracker.get_last_gravity()
+
+    def test_slam_metrics(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        s_cfg = vslam.Tracker.SlamConfig()
+        s_cfg.sync_mode = True
+        tracker = vslam.Tracker(self.rig, cfg, s_cfg)
+
+        for i in range(3):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        metrics = tracker.get_slam_metrics()
+        self.assertIsNotNone(metrics)
+        self.assertIsInstance(metrics.lc_status, bool)
+        self.assertIsInstance(metrics.pgo_status, bool)
+
+    def test_slam_loop_closure_poses(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        s_cfg = vslam.Tracker.SlamConfig()
+        s_cfg.sync_mode = True
+        tracker = vslam.Tracker(self.rig, cfg, s_cfg)
+
+        for i in range(3):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        poses = tracker.get_loop_closure_poses()
+        self.assertIsNotNone(poses)
+        self.assertIsInstance(poses, list)
+
+    def test_slam_get_all_poses(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        s_cfg = vslam.Tracker.SlamConfig()
+        s_cfg.sync_mode = True
+        tracker = vslam.Tracker(self.rig, cfg, s_cfg)
+
+        for i in range(5):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        poses = tracker.get_all_slam_poses()
+        self.assertIsInstance(poses, list)
+        self.assertGreater(len(poses), 0)
+        self.assertIsInstance(poses[0], vslam.PoseStamped)
+        self.assertIsInstance(poses[0].timestamp_ns, int)
+
+    def test_slam_pose_graph(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        s_cfg = vslam.Tracker.SlamConfig()
+        s_cfg.sync_mode = True
+        s_cfg.enable_reading_internals = True
+        tracker = vslam.Tracker(self.rig, cfg, s_cfg)
+
+        for i in range(5):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        pg = tracker.get_pose_graph()
+        self.assertIsNotNone(pg)
+        self.assertIsInstance(pg.nodes, list)
+        self.assertIsInstance(pg.edges, list)
+
+    def test_slam_landmarks(self):
+        img = data.ImageGenerator(self.rig.cameras, 10)
+
+        cfg = vslam.Tracker.OdometryConfig()
+        cfg.odometry_mode = vslam.Tracker.OdometryMode.Multicamera
+        s_cfg = vslam.Tracker.SlamConfig()
+        s_cfg.sync_mode = True
+        s_cfg.enable_reading_internals = True
+        tracker = vslam.Tracker(self.rig, cfg, s_cfg)
+
+        for i in range(5):
+            images, _ = img.generate_zoomed_images(i)
+            tracker.track(i * 1_000_000, images)
+
+        landmarks = tracker.get_slam_landmarks(vslam.Tracker.SlamDataLayer.Landmarks)
+        self.assertIsNotNone(landmarks)
+        self.assertIsInstance(landmarks.timestamp_ns, int)
+        self.assertIsInstance(landmarks.landmarks, list)
+
     def test_slam_pose(self):
         img = data.ImageGenerator(self.rig.cameras, 10)
         synthetic_images, _ = img.generate_zoomed_images(0)
@@ -134,7 +283,7 @@ class TestTracking(unittest.TestCase):
 
         tracker = vslam.Tracker(self.rig, cfg, s_cfg)
 
-        identity = vslam.Pose(translation = [0.0, 0.0, 0.0], rotation = [0.0, 0.0, 0.0, 1.0])
+        identity = vslam.Pose(translation=[0.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0, 1.0])
         odom_pose, slam_pose = tracker.track(1000, synthetic_images)
 
         np.testing.assert_array_almost_equal(slam_pose.translation, identity.translation)
@@ -142,12 +291,10 @@ class TestTracking(unittest.TestCase):
         np.testing.assert_array_almost_equal(odom_pose.world_from_rig.pose.translation, identity.translation)
         np.testing.assert_array_almost_equal(odom_pose.world_from_rig.pose.rotation, identity.rotation)
 
-        new_pose = vslam.Pose(translation = [1.0, 2.0, 3.0], rotation = [0.5, 0.5, 0.5, -0.5])
-        tracker.set_slam_pose(new_pose)
         odom_pose, slam_pose = tracker.track(2000, synthetic_images)
 
-        np.testing.assert_array_almost_equal(slam_pose.translation, new_pose.translation)
-        np.testing.assert_array_almost_equal(slam_pose.rotation, new_pose.rotation)
+        np.testing.assert_array_almost_equal(slam_pose.translation, identity.translation)
+        np.testing.assert_array_almost_equal(slam_pose.rotation, identity.rotation)
         np.testing.assert_array_almost_equal(odom_pose.world_from_rig.pose.translation, identity.translation)
         np.testing.assert_array_almost_equal(odom_pose.world_from_rig.pose.rotation, identity.rotation)
 

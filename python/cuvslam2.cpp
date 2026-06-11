@@ -300,7 +300,7 @@ NB_MODULE(pycuvslam, m) {
   nb::class_<ImuCalibration>(m, "ImuCalibration", "IMU Calibration parameters")
       .def(nb::init<>())
       .def(nb::init<const Pose&, float, float, float, float, float>(), nb::kw_only(), nb::arg("rig_from_imu") = Pose{},
-           nb::arg("gyroscope_noise_density"), nb::arg("accelerometer_noise_density"), nb::arg("gyroscope_random_walk"),
+           nb::arg("gyroscope_noise_density"), nb::arg("gyroscope_random_walk"), nb::arg("accelerometer_noise_density"),
            nb::arg("accelerometer_random_walk"), nb::arg("frequency"))
       .def_rw("rig_from_imu", &ImuCalibration::rig_from_imu,
               "Transformation from IMU coordinate frame to the rig coordinate frame")
@@ -489,13 +489,40 @@ NB_MODULE(pycuvslam, m) {
                     s.gravity.has_value() ? s.gravity.value() : Odometry::Gravity{});
       });
 
+  // TrackOptions binding - per-frame parameter overrides (stateless)
+  nb::class_<Odometry::TrackOptions>(
+      odom_cls, "TrackOptions",
+      "Per-frame tracking options (stateless).\n\n"
+      "These options apply only to the current track() call and do not affect subsequent frames.\n"
+      "Instantiate with TrackOptions() and override only the fields you need.")
+      .def(nb::init<>())
+      // Feature Selection Settings
+      .def_rw("num_desired_tracks", &Odometry::TrackOptions::num_desired_tracks,
+              "Number of desired feature tracks for this frame")
+      .def_rw("border_top", &Odometry::TrackOptions::border_top, "Top border to ignore in pixels")
+      .def_rw("border_bottom", &Odometry::TrackOptions::border_bottom, "Bottom border to ignore in pixels")
+      .def_rw("border_left", &Odometry::TrackOptions::border_left, "Left border to ignore in pixels")
+      .def_rw("border_right", &Odometry::TrackOptions::border_right, "Right border to ignore in pixels")
+      .def_rw("box3_prefilter", &Odometry::TrackOptions::box3_prefilter, "Enable box filter preprocessing")
+      .def_rw("ransac_filter", &Odometry::TrackOptions::ransac_filter, "Enable RANSAC filtering")
+      // Keyframe Settings
+      .def_rw("kf_survivor_from_last", &Odometry::TrackOptions::kf_survivor_from_last,
+              "Keyframe selection threshold: survivor tracks percentage (0-100)")
+      .def_rw("kf_max_timedelta_between_kfs_s", &Odometry::TrackOptions::kf_max_timedelta_between_kfs_s,
+              "Maximum time delta between consecutive keyframes (seconds)")
+      .def("__repr__", [](const Odometry::TrackOptions& o) {
+        return nb::str("TrackOptions(num_desired_tracks={}, kf_survivor_from_last={}, ...)")
+            .format(o.num_desired_tracks, o.kf_survivor_from_last);
+      });
+
   // Odometry class methods
   odom_cls.def(nb::init<const Rig&, const Odometry::Config&>(), nb::arg("rig"), nb::arg("cfg") = Odometry::Config{})
       .def(
           "track",
           [](Odometry& self, int64_t timestamp, const std::vector<nb::ndarray<nb::ro>>& images,
              const std::optional<std::vector<nb::ndarray<nb::ro>>>& masks = std::nullopt,
-             const std::optional<std::vector<nb::ndarray<nb::ro>>>& depths = std::nullopt) -> PoseEstimate {
+             const std::optional<std::vector<nb::ndarray<nb::ro>>>& depths = std::nullopt,
+             const std::optional<Odometry::TrackOptions>& options = std::nullopt) -> PoseEstimate {
             if (masks.has_value()) {
               THROW_INVALID_ARG_IF(masks->size() != images.size() && !masks->empty(),
                                    "If the masks vector is not empty, its size must match the images vector size. "
@@ -522,9 +549,11 @@ NB_MODULE(pycuvslam, m) {
                                               : Odometry::ImageSet();
             auto depth_set = depths.has_value() ? ImageSetFromNDArrays(depths.value(), timestamp, ArrayType::Depth)
                                                 : Odometry::ImageSet();
-            return self.Track(image_set, mask_set, depth_set);
+            return options.has_value() ? self.Track(image_set, mask_set, depth_set, *options)
+                                       : self.Track(image_set, mask_set, depth_set);
           },
           nb::arg("timestamp"), nb::arg("images"), nb::arg("masks") = nb::none(), nb::arg("depths") = nb::none(),
+          nb::arg("options") = nb::none(),
           "Track a rig pose using current image frame.\n\n"
           "Synchronously tracks current image frame and returns a PoseEstimate.\n\n"
           "By default, this function uses visual odometry to compute a pose.\n"
@@ -545,7 +574,8 @@ NB_MODULE(pycuvslam, m) {
           "    timestamp: Image timestamp in nanoseconds\n"
           "    images: List of numpy arrays containing the camera images\n"
           "    masks: Optional list of numpy arrays containing masks for the images\n"
-          "    depths: Optional list of numpy arrays containing depth images\n\n"
+          "    depths: Optional list of numpy arrays containing depth images\n"
+          "    options: Optional per-frame options that override default settings for this call only\n\n"
           "Returns:\n"
           "    :class:`PoseEstimate` object with the computed pose. If tracking fails, `is_valid` will be False.")
       .def(
@@ -617,26 +647,21 @@ NB_MODULE(pycuvslam, m) {
       // currently we don't expose EnableReadingData()/DisableReadingData() to python,
       // so we only need layer names for ReadLandmarks() binding
       // .value("PoseGraph", Slam::DataLayer::PoseGraph, "Pose Graph")
-      // .value("LocalizerProbes", Slam::DataLayer::LocalizerProbes, "Localizer probes")
-      .value("LocalizerMap", Slam::DataLayer::LocalizerMap, "Landmarks of the Localizer map (opened database)")
-      .value("LocalizerLandmarks", Slam::DataLayer::LocalizerLandmarks,
-             "Landmarks that are visible in the localization")
-      .value("LocalizerLoopClosure", Slam::DataLayer::LocalizerLoopClosure,
-             "Landmarks that are visible in the final loop closure of the localization")
       .export_values();
 
   nb::class_<Slam::Config>(slam_cls, "Config", "SLAM configuration parameters")
       .def(nb::init<>())
-      .def(nb::init<std::string_view, bool, bool, bool, bool, bool, float, float, uint32_t, uint32_t>(), nb::kw_only(),
-           nb::arg("map_cache_path") = Slam::Config{}.map_cache_path, nb::arg("use_gpu") = Slam::Config{}.use_gpu,
-           nb::arg("sync_mode") = Slam::Config{}.sync_mode,
+      .def(nb::init<std::string_view, bool, bool, bool, bool, bool, float, float, uint32_t, uint32_t, uint32_t>(),
+           nb::kw_only(), nb::arg("map_cache_path") = Slam::Config{}.map_cache_path,
+           nb::arg("use_gpu") = Slam::Config{}.use_gpu, nb::arg("sync_mode") = Slam::Config{}.sync_mode,
            nb::arg("enable_reading_internals") = true,  // enable by default; in Python convenience is a priority
            nb::arg("planar_constraints") = Slam::Config{}.planar_constraints,
            nb::arg("gt_align_mode") = Slam::Config{}.gt_align_mode,
            nb::arg("map_cell_size") = Slam::Config{}.map_cell_size,
            nb::arg("max_landmarks_distance") = Slam::Config{}.max_landmarks_distance,
            nb::arg("max_map_size") = Slam::Config{}.max_map_size,
-           nb::arg("throttling_time_ms") = Slam::Config{}.throttling_time_ms)
+           nb::arg("throttling_time_ms") = Slam::Config{}.throttling_time_ms,
+           nb::arg("retention_time_ms") = Slam::Config{}.retention_time_ms)
       .def_rw("map_cache_path", &Slam::Config::map_cache_path,
               "If empty, map is kept in memory only. Else, map is synced to disk (LMDB) at this path, allowing "
               "large-scale maps; if the path already exists it will be overwritten. To load an existing map, use "
@@ -657,14 +682,17 @@ NB_MODULE(pycuvslam, m) {
               "Maximum number of poses in SLAM pose graph (0 for unlimited)")
       .def_rw("throttling_time_ms", &Slam::Config::throttling_time_ms,
               "Minimum time between loop closure events in milliseconds")
+      .def_rw("retention_time_ms", &Slam::Config::retention_time_ms,
+              "How long the past is preserved. Maximum time to keep odometries delta history to be able "
+              "to process LocalizeInMap within timestamps from past.")
       .def("__repr__", [](const Slam::Config& cfg) {
         return nb::str(
                    "cuvslam.Slam.Config(map_cache_path={}, use_gpu={}, sync_mode={}, enable_reading_internals={}, "
                    "planar_constraints={}, gt_align_mode={}, map_cell_size={}, max_landmarks_distance={}, "
-                   "max_map_size={}, throttling_time_ms={})")
+                   "max_map_size={}, throttling_time_ms={}, retention_time_ms={})")
             .format(cfg.map_cache_path, cfg.use_gpu, cfg.sync_mode, cfg.enable_reading_internals,
                     cfg.planar_constraints, cfg.gt_align_mode, cfg.map_cell_size, cfg.max_landmarks_distance,
-                    cfg.max_map_size, cfg.throttling_time_ms);
+                    cfg.max_map_size, cfg.throttling_time_ms, cfg.retention_time_ms);
       });
 
   nb::class_<Slam::LocalizationSettings>(slam_cls, "LocalizationSettings", "Localization settings")
@@ -679,7 +707,6 @@ NB_MODULE(pycuvslam, m) {
             self->horizontal_step = horizontal_step;
             self->vertical_step = vertical_step;
             self->angular_step_rads = angular_step_rads;
-            self->enable_reading_internals = false;  // don't expose this parameter in Python
           },
           nb::kw_only(), nb::arg("horizontal_search_radius"), nb::arg("vertical_search_radius"),
           nb::arg("horizontal_step"), nb::arg("vertical_step"), nb::arg("angular_step_rads"))
@@ -773,36 +800,6 @@ NB_MODULE(pycuvslam, m) {
             .format(ls.timestamp_ns, ls.landmarks.size());
       });
 
-  // Slam localizer probes data structures
-  nb::class_<Slam::LocalizerProbe>(slam_cls, "LocalizerProbe",
-                                   "Localizer probe used during map localization.\n\n"
-                                   "Contains input guess pose, result pose and weights, and success flag.")
-      .def(nb::init<>())
-      .def_rw("id", &Slam::LocalizerProbe::id, "Probe identifier")
-      .def_rw("guess_pose", &Slam::LocalizerProbe::guess_pose, "Input guess pose")
-      .def_rw("exact_result_pose", &Slam::LocalizerProbe::exact_result_pose, "Exact pose if localization succeeded")
-      .def_rw("weight", &Slam::LocalizerProbe::weight, "Input weight for the probe")
-      .def_rw("exact_result_weight", &Slam::LocalizerProbe::exact_result_weight, "Weight of the resulting solution")
-      .def_rw("solved", &Slam::LocalizerProbe::solved, "True if the probe was solved successfully")
-      .def("__repr__", [](const Slam::LocalizerProbe& p) {
-        return nb::str(
-                   "cuvslam.Slam.LocalizerProbe(id={}, guess_pose={}, exact_result_pose={}, weight={}, "
-                   "exact_result_weight={}, solved={})")
-            .format(p.id, p.guess_pose, p.exact_result_pose, p.weight, p.exact_result_weight,
-                    p.solved ? "True" : "False");
-      });
-
-  nb::class_<Slam::LocalizerProbes>(slam_cls, "LocalizerProbes",
-                                    "Collection of localizer probes for a localization attempt.")
-      .def(nb::init<>())
-      .def_rw("timestamp_ns", &Slam::LocalizerProbes::timestamp_ns, "Timestamp of localizer try in nanoseconds")
-      .def_rw("size", &Slam::LocalizerProbes::size, "Size of search area")
-      .def_rw("probes", &Slam::LocalizerProbes::probes, "List of localizer probes, see :class:`Slam.LocalizerProbe`")
-      .def("__repr__", [](const Slam::LocalizerProbes& lp) {
-        return nb::str("cuvslam.Slam.LocalizerProbes(timestamp_ns={}, size={}, probes=[{} items])")
-            .format(lp.timestamp_ns, lp.size, lp.probes.size());
-      });
-
   // Slam class methods
   slam_cls
       .def(nb::init<const Rig&, const std::vector<uint8_t>&, const Slam::Config&>(), nb::arg("rig"),
@@ -816,10 +813,6 @@ NB_MODULE(pycuvslam, m) {
            "should be None.\n"
            "Returns:\n"
            "    On success returns rig pose estimated by SLAM")
-      .def("set_slam_pose", &Slam::SetSlamPose, nb::arg("pose"),
-           "Set the rig SLAM pose to a value provided by a user.\n\n"
-           "Parameters:\n"
-           "    pose: Rig pose estimated by customer")
       .def(
           "get_all_slam_poses",
           [](const Slam& self, uint32_t max_poses_count) -> std::vector<PoseStamped> {
@@ -853,9 +846,9 @@ NB_MODULE(pycuvslam, m) {
           "    callback: Function to be called when save is complete (takes bool success parameter)")
       .def(
           "localize_in_map",
-          [](Slam& self, const std::string_view& folder_name, const Pose& guess_pose,
+          [](Slam& self, const std::string_view& folder_name, int64_t timestamp_ns, const Pose& guess_pose,
              const std::vector<nb::ndarray<nb::ro>>& images, const Slam::LocalizationSettings& settings,
-             nb::callable callback) {
+             nb::callable start_cb, nb::callable finish_cb) {
             auto ImageSetFromNDArrays = [](const std::vector<nb::ndarray<nb::ro>>& images, int64_t timestamp) {
               Slam::ImageSet images_set;
               images_set.reserve(images.size());
@@ -868,26 +861,34 @@ NB_MODULE(pycuvslam, m) {
               }
               return images_set;
             };
-            // Use current timestamp for images
-            auto image_set = ImageSetFromNDArrays(images, std::chrono::system_clock::now().time_since_epoch().count());
-            self.LocalizeInMap(folder_name, guess_pose, image_set, settings, [callback](const Result<Pose>& result) {
-              nb::gil_scoped_acquire gil;
-              callback(result.data, result.error_message);
-            });
+            auto image_set = ImageSetFromNDArrays(images, timestamp_ns);
+            self.LocalizeInMap(
+                folder_name, timestamp_ns, guess_pose, image_set, settings,
+                [start_cb] {
+                  nb::gil_scoped_acquire gil;
+                  start_cb();
+                },
+                [finish_cb](const Result<Pose>& result) {
+                  nb::gil_scoped_acquire gil;
+                  finish_cb(result.data, result.error_message);
+                });
           },
-          nb::arg("folder_name"), nb::arg("guess_pose"), nb::arg("images"), nb::arg("settings"), nb::arg("callback"),
-          "Localize in the existing database (map) asynchronously.\n\n"
-          "Finds the position of the rig in existing SLAM database.\n"
-          "If successful, sets the SLAM pose to the found position.\n"
-          "This method works asynchronously depending on the `sync_mode` parameter in `Slam.Config`.\n"
-          "In both cases, the callback will be called with localization result or error message.\n"
+          nb::arg("folder_name"), nb::arg("timestamp_ns"), nb::arg("guess_pose"), nb::arg("images"),
+          nb::arg("settings"), nb::arg("start_cb"), nb::arg("finish_cb"),
+          "Localize in the existing database (map).\n\n"
+          "If ``Slam.Config.sync_mode`` is false, work is queued for the background slam thread and the callback runs "
+          "when localization finishes (possibly on another thread than the caller). If ``Slam.Config.sync_mode`` is "
+          "true, localization runs immediately before this call returns.\n"
+          "Finds the rig pose in the saved map. If successful, replace current map with saved one.\n"
+          "`finish_cb` receives the localization result or an error message.\n"
           "Parameters:\n"
-          "    folder_name: Folder name which stores saved SLAM database\n"
-          "    guess_pose: Proposed pose where the robot might be\n"
+          "    folder_name: Folder containing the saved SLAM map\n"
+          "    timestamp_ns: Timestamp for the image frame in nanoseconds\n"
+          "    guess_pose: Initial guess for rig pose at the image timestamp\n"
           "    images: List of numpy arrays containing the camera images\n"
           "    settings: Localization settings\n"
-          "    callback: Function to be called when localization is complete "
-          "(takes <Pose | None> result and error message parameters)")
+          "    start_cb: Called when localization begins (no arguments)\n"
+          "    finish_cb: Called when localization completes (receives pose result and error message)")
       .def(
           "get_landmarks",
           [](Slam& self, Slam::DataLayer layer) -> Slam::Landmarks {
@@ -912,16 +913,6 @@ NB_MODULE(pycuvslam, m) {
           "Returns:\n"
           "    Pose graph with nodes and edges")
       .def(
-          "get_localizer_probes",
-          [](Slam& self) -> Slam::LocalizerProbes {
-            self.EnableReadingData(Slam::DataLayer::LocalizerProbes, 1000);
-            auto probes = self.ReadLocalizerProbes();
-            return probes ? *probes : Slam::LocalizerProbes{};
-          },
-          "Get localizer probes from the most recent localization attempt.\n\n"
-          "Returns:\n"
-          "    Collection of localizer probes with timestamp, search area size, and probe list")
-      .def(
           "get_slam_metrics",
           [](const Slam& self) -> Slam::Metrics {
             Slam::Metrics metrics;
@@ -940,22 +931,7 @@ NB_MODULE(pycuvslam, m) {
           },
           "Get list of last 10 loop closure poses with timestamps.\n\n"
           "Returns:\n"
-          "    List of poses with timestamps")
-      .def_static(
-          "merge_maps",
-          [](const Rig& rig, const std::vector<std::string_view>& databases, const std::string_view& output_folder) {
-            Slam::MergeMaps(rig, databases, output_folder);
-          },
-          nb::arg("rig"), nb::arg("databases"), nb::arg("output_folder"),
-          "Merge existing maps into one map.\n\n"
-          "This method merges multiple maps into a single map. Maps must have the same world coordinate frame, "
-          "e.g. using `set_slam_pose` from a ground truth source.\n\n"
-          "This method cannot be used to merge maps from different locations, "
-          "because pose graphs from input maps must be combined into a single graph.\n\n"
-          "Parameters:\n"
-          "    rig: Camera rig configuration\n"
-          "    databases: Input array of directories with existing databases\n"
-          "    output_folder: Directory to save output database");
+          "    List of poses with timestamps");
 }
 
 }  // namespace cuvslam

@@ -30,7 +30,7 @@ using Mat36 = Eigen::Matrix<float, 3, 6>;
 using Mat23 = Eigen::Matrix<float, 2, 3>;
 using Mat26 = Eigen::Matrix<float, 2, 6>;
 
-const float point_z_thresh = -0.01f;
+const float point_z_thresh = 0.01f;
 const size_t max_obs_per_camera = 270;
 
 namespace {
@@ -68,7 +68,7 @@ float VisualICP::reprojection_cost_and_hessian(Matrix6T& H, Vector6T& rhs, const
 
     point_cam = cam_from_world * landmark_world;
 
-    if (point_cam.z() > point_z_thresh) continue;
+    if (point_cam.z() <= point_z_thresh) continue;
 
     count++;
 
@@ -127,7 +127,7 @@ float VisualICP::icp_hessian_and_cost(Matrix6T& H, Vector6T& rhs, const Isometry
   gpu_tracks.reserve(tracks.size());
   for (const auto& pair : tracks) {
     cuvslam::cuda::GPUICPTools::ObsLmPair gpu_pair;
-    gpu_pair.obs_xy = {-pair.observation.get().xy.x(), pair.observation.get().xy.y()};
+    gpu_pair.obs_xy = {pair.observation.get().xy.x(), pair.observation.get().xy.y()};
     const Vector3T& lm = pair.landmark.get();
     gpu_pair.lm_xyz = {lm.x(), lm.y(), lm.z()};
     gpu_tracks.push_back(gpu_pair);

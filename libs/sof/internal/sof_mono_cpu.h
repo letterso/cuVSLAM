@@ -46,17 +46,15 @@ public:
              FeaturePredictorPtr feature_predictor, const Settings& sof_settings);
 
   void track(const ImageAndSource& curr_image, const ImageContextPtr& prev_image,
-             const Isometry3T& predicted_world_from_rig, const ImageSource* mask_src) final;
+             const Isometry3T& predicted_world_from_rig, const Settings& sof_settings,
+             const ImageSource* mask_src = nullptr) final;
 
-  const TracksVector& finish(FrameState& state) final;
+  const TracksVector& finish(FrameState& state, [[maybe_unused]] const Settings& sof_settings) final;
 
   void reset() final;
 
 private:
   const camera::ICameraModel& intrinsics_;
-
-  // external parameters
-  Settings sof_settings_;
 
   // internal state
   TracksVector last_keyframe_tracks_;  // last keyframe tracks
@@ -67,7 +65,8 @@ private:
 
   ImageMatrix<size_t> tracksMap_;  // for collapse
 
-  void addFeatures(const ImageContextPtr& image, TracksVector& existing_tracks, std::vector<Vector2T>& new_tracks);
+  void addFeatures(const ImageContextPtr& image, TracksVector& existing_tracks, std::vector<Vector2T>& new_tracks,
+                   const Settings& sof_settings);
   void trackFeatures(const ImageContextPtr& curr_image, const ImageContextPtr& prev_image,
                      const Isometry3T& worldFromRig);
   void collapseTracks(const ImageContextPtr& image, TracksVector& tracks);

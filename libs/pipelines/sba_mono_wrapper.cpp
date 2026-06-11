@@ -33,8 +33,7 @@ static bool calcTrackResidualInFrame(const Isometry3T& inverse_camera, const sto
   const Vector3T v3 = inverse_camera * outTrack.getLocation3D();
   const float z = v3.z();
 
-  if (z > epipolar::FrustumProperties::MINIMUM_HITHER)  // v3.z() must be negative
-  {
+  if (z < epipolar::FrustumProperties::MINIMUM_HITHER) {
     return false;
   }
   const Vector2T proj = v3.head(2) / z;

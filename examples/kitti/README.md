@@ -62,6 +62,8 @@ PyCuVSLAM provides SLAM functionality, enabling you to map an environment, save 
 
 Below is an example demonstrating loop closure detection. When the vehicle revisits a previously mapped area, loop closure events are triggered (indicated by large red dots), and the SLAM pose is adjusted based on matching visual features stored in the SLAM map. From this point onward, a difference appears between the instantaneous odometry pose (purple line) and the SLAM-corrected pose (yellow line):
 
+*KITTI sequence 00*
+
 ![Loop Closure Demonstration](../assets/tutorial_kitti_lc.gif)
 
 To enable SLAM in PyCuVSLAM, you must provide a SLAM configuration when initializing the tracker:

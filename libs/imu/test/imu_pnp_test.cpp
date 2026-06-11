@@ -36,7 +36,6 @@
 #include "odometry/increment_pose.h"
 #include "sba/imu/imu_pnp.h"
 #include "sba/imu/imu_pnp_types.h"
-
 namespace {
 using namespace cuvslam;
 
@@ -291,9 +290,7 @@ void GeneratePoints(
     std::vector<Observation>& obs,
     size_t num_points = 20
 ) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    gen.seed(0);
+    std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
     std::uniform_real_distribution<float> dist_z(5, 10.f);
     std::uniform_int_distribution<int> dist_i(0, poses.size() - 1);
     size_t point_counter = 0;
@@ -303,7 +300,7 @@ void GeneratePoints(
         float z = dist_z(gen);
         std::uniform_real_distribution<float> dist_xy(-z, z);
 
-        Vector3T point_r = {dist_xy(gen), dist_xy(gen), -z};
+        Vector3T point_r = {dist_xy(gen), dist_xy(gen), z};
         Vector3T point_w = poses[dist_i(gen)] * point_r;
 
         std::vector<Vector3T> pc, pc_r;
@@ -313,7 +310,7 @@ void GeneratePoints(
             Vector3T p_c = pose.inverse() * point_w;
             Vector3T p_c_r = (pose * left_from_right).inverse() * point_w;
 
-            if (p_c.z() > -1.f || p_c_r.z() > -1.f) {
+            if (p_c.z() < 1.f || p_c_r.z() < 1.f) {
                 ok = false;
                 break;
             }
@@ -483,7 +480,7 @@ void FullIntegrate(
     float vo_angle_sigma = 1e-3f,
     float vo_trans_sigma = 1e-1f)
 {
-    const Vector3T g(0, -g_norm, 0);
+    const Vector3T g(0, g_norm, 0);  // OpenCV world: +Y down, gravity along +Y
 
     Isometry3T left_from_right = Isometry3T::Identity();
     left_from_right.translation() << 0.1, 0, 0;
@@ -509,9 +506,7 @@ void FullIntegrate(
     Isometry3T last_pose = start_pose;
     Matrix6T last_covariance;
 
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    gen.seed(0);
+    std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
     std::normal_distribution<float> gyro_normal_distribution(0, gyro_sigma);
     std::normal_distribution<float> acc_normal_distribution(0, acc_sigma);
     std::normal_distribution<float> vo_angle_normal_distribution(0, vo_angle_sigma);
@@ -640,9 +635,7 @@ void run_test(
 namespace test::sba_imu {
 
 TEST(Imu, ImuPnPTest) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    gen.seed(0);
+    std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
     std::normal_distribution<float> nd_gyro(0, 1e-5);
     std::normal_distribution<float> nd_acc(0, 1e-5);
 

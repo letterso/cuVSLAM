@@ -38,6 +38,11 @@ bool both_fixed(const sba_imu::ImuBAProblem& problem, int pid) {
   return is_fixed(problem, pid) && is_fixed(problem, pid + 1);
 }
 
+float effective_imu_penalty(const sba_imu::ImuBAProblem& problem, int i) {
+  bool is_boundary = is_fixed(problem, i) && !is_fixed(problem, i + 1);
+  return is_boundary ? problem.boundary_imu_penalty : problem.imu_penalty;
+}
+
 }  // namespace
 
 namespace cuvslam::sba_imu {
@@ -71,13 +76,10 @@ bool IMUBundlerCpuFixedVel::solve(ImuBAProblem& problem) {
   }
 
   if (std::isnan(initial_cost)) {
-    // TraceError("initial_cost");
     return false;
   }
 
   if (initial_cost == std::numeric_limits<float>::infinity()) {
-    // starting point is not feasible
-    // TraceError("initial_cost = infinity");
     return false;
   }
 
@@ -158,10 +160,6 @@ bool IMUBundlerCpuFixedVel::solve(ImuBAProblem& problem) {
     assert(std::isfinite(current_cost));
     assert(std::isfinite(predicted_relative_reduction));
     auto rho = (1.f - cost / current_cost) / predicted_relative_reduction;
-    //        std::cout << "curr_cost = " << current_cost << std::endl;
-    //        std::cout << "cost = " << cost << std::endl;
-    //        std::cout << "prr = " << predicted_relative_reduction << std::endl;
-    //        std::cout << "rho = " << rho << std::endl;
 
     if (rho > 0.25f) {
       if (rho > 0.75f) {
@@ -180,8 +178,6 @@ bool IMUBundlerCpuFixedVel::solve(ImuBAProblem& problem) {
     }
   }
   if (current_cost < initial_cost) {
-    // std::cout << "init = " << initial_cost << " cost = " << current_cost << std::endl;
-
     Vector3T gyro_diff, acc_diff;
     for (int i = 0; i < num_poses; i++) {
       if (is_fixed(problem, i)) {
@@ -254,7 +250,7 @@ float IMUBundlerCpuFixedVel::EvaluateCost(const ImuBAProblem& problem, const int
 
     p_c = cam_from_imu[camera_idx] * imu_from_w[pose_idx] * p_w;
 
-    if (p_c.z() < 0) {
+    if (p_c.z() > 0) {
       r = p_c.topRows(2) / p_c.z() - problem.observation_xys[obs];
       cost += ROBUST_COST(r.dot(problem.observation_infos[obs] * r), problem.robustifier_scale);
     } else {
@@ -285,9 +281,10 @@ float IMUBundlerCpuFixedVel::EvaluateCost(const ImuBAProblem& problem, const int
     preint.InfoGyroRWMatrix(info_gyro_rw);
     preint.InfoAccRWMatrix(info_acc_rw);
 
-    info *= problem.imu_penalty;
-    info_gyro_rw *= problem.imu_penalty;
-    info_acc_rw *= problem.imu_penalty;
+    const float eff_penalty = effective_imu_penalty(problem, i);
+    info *= eff_penalty;
+    info_gyro_rw *= eff_penalty;
+    info_acc_rw *= (problem.acc_rw_penalty >= 0 ? problem.acc_rw_penalty : eff_penalty);
 
     const Pose& pu1 = updated_poses[i];
     const Pose& pu2 = updated_poses[i + 1];
@@ -326,15 +323,13 @@ float IMUBundlerCpuFixedVel::EvaluateCost(const ImuBAProblem& problem, const int
   Matrix3T prior_gyro_info = Matrix3T::Identity() * problem.prior_gyro;
   Matrix3T prior_acc_info = Matrix3T::Identity() * problem.prior_acc;
 
-  // priors
-  for (int i = 0; i < num_poses; i++) {
-    if (is_fixed(problem, i)) {
-      continue;
-    }
-    const Pose& pose = updated_poses[i];
+  // bias priors on oldest non-fixed pose only; random walk propagates to newer poses
+  if (problem.num_fixed_key_frames < num_poses) {
+    const Pose& pose = updated_poses[problem.num_fixed_key_frames];
     cost += pose.gyro_bias.dot(prior_gyro_info * pose.gyro_bias);
     cost += pose.acc_bias.dot(prior_acc_info * pose.acc_bias);
   }
+
   return cost;
 }
 
@@ -505,7 +500,7 @@ void IMUBundlerCpuFixedVel::UpdateModel(internal::ModelFunction& model, ImuBAPro
     Matrix3T Rimu_from_w = imu_from_w.linear();
     Matrix3T Rcam_from_imu = cam_from_imu[camera_idx].linear();
 
-    if (p_c.z() < 0) {
+    if (p_c.z() > 0) {
       Vector2T prediction = p_c.topRows(2) / p_c.z();
       Vector2T r = prediction - problem.observation_xys[obs];
 
@@ -762,7 +757,7 @@ void IMUBundlerCpuFixedVel::BuildFullSystem(internal::FullSystem& system, const 
     const auto& jacobians = model.inertial_jacobians[i];
     preint.InfoMatrix(info);
 
-    info *= problem.imu_penalty;
+    info *= effective_imu_penalty(problem, i);
 
     temp = jacobians.JR_left.transpose() * info;
 
@@ -972,8 +967,9 @@ void IMUBundlerCpuFixedVel::BuildFullSystem(internal::FullSystem& system, const 
     preint.InfoGyroRWMatrix(info_gyro_rw);
     preint.InfoAccRWMatrix(info_acc_rw);
 
-    info_gyro_rw *= problem.imu_penalty;
-    info_acc_rw *= problem.imu_penalty;
+    const float eff_penalty = effective_imu_penalty(problem, i);
+    info_gyro_rw *= eff_penalty;
+    info_acc_rw *= (problem.acc_rw_penalty >= 0 ? problem.acc_rw_penalty : eff_penalty);
 
     int id = i - problem.num_fixed_key_frames;
 
@@ -1003,21 +999,15 @@ void IMUBundlerCpuFixedVel::BuildFullSystem(internal::FullSystem& system, const 
     }
   }
 
-  // bias priors
-  Matrix3T prior_gyro_info = Matrix3T::Identity() * problem.prior_gyro;
-  Matrix3T prior_acc_info = Matrix3T::Identity() * problem.prior_acc;
-  for (int i = problem.num_fixed_key_frames; i < num_poses; i++) {
-    if (is_fixed(problem, i)) {
-      continue;
-    }
-
-    int id = i - problem.num_fixed_key_frames;
-    system.pose_block.block<3, 3>(15 * id + 9, 15 * id + 9) += prior_gyro_info;
-    system.pose_block.block<3, 3>(15 * id + 12, 15 * id + 12) += prior_acc_info;
-
-    system.pose_rhs.segment<3>(15 * id + 9) -= prior_gyro_info * problem.rig_poses[i].gyro_bias;
-
-    system.pose_rhs.segment<3>(15 * id + 12) -= prior_acc_info * problem.rig_poses[i].acc_bias;
+  // bias priors on oldest non-fixed pose only; random walk propagates to newer poses
+  if (num_poses_opt > 0) {
+    Matrix3T prior_gyro_info = Matrix3T::Identity() * problem.prior_gyro;
+    Matrix3T prior_acc_info = Matrix3T::Identity() * problem.prior_acc;
+    const int i = problem.num_fixed_key_frames;
+    system.pose_block.block<3, 3>(9, 9) += prior_gyro_info;
+    system.pose_block.block<3, 3>(12, 12) += prior_acc_info;
+    system.pose_rhs.segment<3>(9) -= prior_gyro_info * problem.rig_poses[i].gyro_bias;
+    system.pose_rhs.segment<3>(12) -= prior_acc_info * problem.rig_poses[i].acc_bias;
   }
 }
 

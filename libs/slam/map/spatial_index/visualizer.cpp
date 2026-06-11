@@ -31,7 +31,7 @@ void LSIGridVisualizer::LogCell(const LSIGrid& lsi, HashCellId hash_cell_id,
   const float cell_size = lsi.GetCellSize();
   const std::vector<rerun::datatypes::Vec3D> size = {{cell_size, cell_size, cell_size}};
   const rerun::Rgba32 color(rand() % 256, rand() % 256, rand() % 256);
-  rec.log("world/" + name, rerun::Boxes3D::from_centers_and_sizes(center, size).with_colors({color}));
+  rec.log("world/lsi_cells/" + name, rerun::Boxes3D::from_centers_and_sizes(center, size).with_colors({color}));
 
   const LSIGrid::Cell& cell = lsi.cells_.at(hash_cell_id);
   const std::vector<LandmarkId>& landmark_ids_in_cell = cell.landmarks_in_cell;
@@ -41,7 +41,7 @@ void LSIGridVisualizer::LogCell(const LSIGrid& lsi, HashCellId hash_cell_id,
     const Vector3T p = lsi.GetLandmarkOrStagedCoords(id, pose_graph_hypothesis);
     positions.emplace_back(p.x(), p.y(), p.z());
   }
-  rec.log("world/" + name + "/p", rerun::Points3D(positions).with_colors({color}));
+  rec.log("world/lsi_landmarks/" + name + "/p", rerun::Points3D(positions).with_colors({color}));
 }
 
 }  // namespace cuvslam::slam

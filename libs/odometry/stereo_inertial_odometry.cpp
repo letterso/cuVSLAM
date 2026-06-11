@@ -51,4 +51,8 @@ void StereoInertialOdometry::add_imu_measurement(const imu::ImuMeasurement& m) {
 
 std::optional<Vector3T> StereoInertialOdometry::get_gravity() const { return solver_.get_gravity(); }
 
+std::optional<pipelines::SolverSfMInertial::ImuState> StereoInertialOdometry::GetImuState() const {
+  return solver_.GetImuState();
+}
+
 }  // namespace cuvslam::odom

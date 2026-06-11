@@ -64,8 +64,8 @@ protected:
 
 protected:
   const size_t num3DPoints_ = 60;
-  Vector3T points3DMinRange_ = Vector3T(3, 2, -16);
-  Vector3T points3DMaxRange_ = Vector3T(13, 10, -5);
+  Vector3T points3DMinRange_ = Vector3T(3, 2, 5);
+  Vector3T points3DMaxRange_ = Vector3T(13, 10, 16);
   Isometry3T camera1_, camera2_;
   Isometry3T relativeTransform_;
   Vector2TVector points2DLocal1_;

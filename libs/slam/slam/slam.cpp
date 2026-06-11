@@ -19,10 +19,9 @@
 
 #include "camera/observation.h"
 #include "common/log_types.h"
-#include "math/twist.h"
+#include "common/rerun.h"
 
 #include "slam/map/database/lmdb_slam_database.h"
-#include "slam/map/pose_graph/slam_optimize_options.h"
 #include "slam/map/spatial_index/lsi_grid.h"
 #include "slam/slam/slam_check_hypothesis.h"
 
@@ -37,14 +36,16 @@ LocalizerAndMapper::LocalizerAndMapper(const camera::Rig& rig, FeatureDescriptor
 LocalizerAndMapper::~LocalizerAndMapper() { SlamStdout("Destroyed LocalizerAndMapper instance. "); }
 
 void LocalizerAndMapper::SetReproduceMode(bool reproduce_mode) {
+  reproduce_mode_ = reproduce_mode;
   if (reproduce_mode) {
     random_generator_.seed(0);
   }
 }
 
+bool LocalizerAndMapper::GetReproduceMode() const { return reproduce_mode_; }
+
 void LocalizerAndMapper::SetLandmarksSpatialIndex(const SpatialIndexOptions& options) {
   float size = options.cell_size;
-  std::string weight_func = "probes_composed";
 
   // default size
   if (size <= 0) {
@@ -62,21 +63,31 @@ void LocalizerAndMapper::SetLandmarksSpatialIndex(const SpatialIndexOptions& opt
   }
 
   map_.landmarks_spatial_index_ =
-      std::make_shared<LSIGrid>(*map_.feature_descriptor_ops_, rig_, size, options.max_landmarks_in_cell, weight_func);
+      std::make_shared<LSIGrid>(*map_.feature_descriptor_ops_, rig_, size, options.max_landmarks_in_cell);
+}
+
+SpatialIndexOptions LocalizerAndMapper::GetLandmarksSpatialIndexOptions() const {
+  SpatialIndexOptions opt;
+  opt.cell_size = map_.landmarks_spatial_index_->GetCellSize();
+  opt.max_landmarks_in_cell = map_.landmarks_spatial_index_->GetMaxLandmarksInCell();
+
+  return opt;
 }
 
 void LocalizerAndMapper::SetKeyframesLimit(int max_keyframes_count) { max_keyframes_count_ = max_keyframes_count; }
 
+int LocalizerAndMapper::GetKeyframesLimit() const { return max_keyframes_count_; }
+
 bool LocalizerAndMapper::SetPoseGraphOptimizerOptions(const PoseGraphOptimizerOptions& options) {
-  if (options.type == Simple) {
-    pose_graph_optimizer_ = "simple";
-  } else if (options.type == Dummy) {
-    pose_graph_optimizer_ = "";
-  } else {
+  if (options.type != Simple && options.type != Dummy) {
     return false;
   }
+  pg_options_ = options;
+  pose_graph_optimizer_ = options.type == Simple ? "simple" : "";
   return true;
 }
+
+PoseGraphOptimizerOptions LocalizerAndMapper::GetPoseGraphOptimizerOptions() const { return pg_options_; }
 
 void LocalizerAndMapper::SetKeepTrackPoses(bool keep_track_poses) {
   // if true - CalcFramePose() will working
@@ -96,6 +107,8 @@ void LocalizerAndMapper::SetKeepTrackPoses(bool keep_track_poses) {
   }
 }
 
+bool LocalizerAndMapper::GetKeepTrackPoses() const { return keep_track_poses_; }
+
 void LocalizerAndMapper::SetActiveCameras(const std::vector<CameraId>& cameras) {
   if (active_cameras_) {
     throw std::runtime_error("Set active camera should be called once before map update.");
@@ -103,149 +116,10 @@ void LocalizerAndMapper::SetActiveCameras(const std::vector<CameraId>& cameras) 
   active_cameras_ = cameras;
 }
 
-bool LocalizerAndMapper::UnionWith(const Map& const_map,
-                                   KeyFrameId to_keyframe_id,          // of this
-                                   KeyFrameId const_slam_keyframe_id,  // of const_slam
-                                   const Isometry3T& pose_of_frame_id_in_const_slam, const Matrix6T& covariance,
-                                   Isometry3T* slam_to_head, const UnionWithOptions& options) {
-  // Transform for const_slam poses
-  Isometry3T from_to = Isometry3T::Identity();
-  const Isometry3T* const_slam_keyframe_pose =
-      const_map.GetPoseGraphHypothesis().GetKeyframePose(const_slam_keyframe_id);
-  if (const_slam_keyframe_pose) {
-    from_to = const_slam_keyframe_pose->inverse() * pose_of_frame_id_in_const_slam;
-  }
+std::optional<std::vector<CameraId>> LocalizerAndMapper::GetActiveCameras() const { return active_cameras_; }
 
-  // Reindex exists data
-  std::map<KeyFrameId, KeyFrameId> keyframe_id_remap;
-  if (!map_.pose_graph_.CreateKeyframeIdRemap(const_map.pose_graph_, keyframe_id_remap)) {
-    SlamStderr("Failed to create keyframe remapping in pose graph.\n");
-    return false;
-  }
-
-  std::function<void(LandmarkId, KeyFrameId)> empty_func = [&](LandmarkId, KeyFrameId) {};
-  map_.landmarks_spatial_index_->RemoveDeadLandmarks(empty_func);
-
-  std::map<LandmarkId, LandmarkId> landmark_id_remap;
-  if (!map_.landmarks_spatial_index_->CreateLandmarkIdRemap(const_map.landmarks_spatial_index_.get(),
-                                                            landmark_id_remap)) {
-    SlamStderr("Failed to create landmark remapping in LSI grid.\n");
-    return false;
-  }
-
-  if (to_keyframe_id != InvalidKeyFrameId) {
-    // change to_keyframe_id
-    auto it = keyframe_id_remap.find(to_keyframe_id);
-    if (it == keyframe_id_remap.end()) {
-      SlamStderr("to_keyframe_id is not found in remapped keyframes.\n");
-      return false;
-    }
-    to_keyframe_id = it->second;
-  }
-
-  if (!map_.pose_graph_.Reindex(keyframe_id_remap, landmark_id_remap)) {
-    SlamStderr("Failed to reindex pose graph corresponding to remapped keyframes and landmarks.\n");
-    return false;
-  }
-  if (!map_.pose_graph_hypothesis_.Reindex(keyframe_id_remap)) {
-    SlamStderr("Failed to reindex pose graph hypothesis corresponding to remapped keyframes.\n");
-    return false;
-  }
-  if (!map_.landmarks_spatial_index_->Reindex(keyframe_id_remap, landmark_id_remap)) {
-    SlamStderr("Failed to reindex LSI grid corresponding to remapped keyframes and landmarks.\n");
-    return false;
-  }
-
-  bool reassign_head_node = (to_keyframe_id == InvalidKeyFrameId);
-  if (!map_.pose_graph_.Union(const_map.pose_graph_, reassign_head_node)) {
-    SlamStderr("Failed to union pose graph with const_slam pose graph.\n");
-    return false;
-  }
-  if (!map_.pose_graph_hypothesis_.Union(const_map.pose_graph_hypothesis_)) {
-    SlamStderr("Failed to union pose graph hypothesis with const_slam pose graph hypothesis.\n");
-    return false;
-  }
-
-  // Add edge
-  if (to_keyframe_id != InvalidKeyFrameId) {
-    map_.pose_graph_.AddEdge(map_.pose_graph_hypothesis_, const_slam_keyframe_id, to_keyframe_id, from_to, covariance,
-                             nullptr);
-  }
-
-  if (options.optimize_after_union) {
-    // Optimize Pose Graph
-    Isometry3T vo_to_head;
-    OptimizeOptions optimize_options;
-    optimize_options.condition = SuccessfullLC;
-    optimize_options.constraint_first_node = true;
-    optimize_options.max_iterations = 10;
-    if (!map_.pose_graph_.Optimize(map_.pose_graph_hypothesis_, map_.pose_graph_hypothesis_for_swap_, vo_to_head,
-                                   optimize_options)) {
-      SlamStderr("Failed to optimize pose graph.\n");
-      return false;
-    }
-    Isometry3T pose_estimate = this->pose_estimate_;
-    pose_estimate = pose_estimate * vo_to_head;
-    RemoveScaleFromTransform(pose_estimate);
-    this->pose_estimate_ = pose_estimate;
-
-    map_.pose_graph_hypothesis_.swap(map_.pose_graph_hypothesis_for_swap_);
-
-    if (slam_to_head) {
-      *slam_to_head = vo_to_head;
-    }
-  }
-
-  // reset database
-  map_.landmarks_spatial_index_->SetDatabase(nullptr);
-
-  if (!map_.landmarks_spatial_index_->Union(const_map.landmarks_spatial_index_.get(), map_.pose_graph_hypothesis_)) {
-    SlamStderr("Failed to union LSI grid with const_slam LSI grid.\n");
-    return false;
-  }
-
-  // required for CalcFramePose()
-  {
-    auto reindex_keyframe = [&](KeyFrameId src, KeyFrameId& dst) {
-      auto it_remap = keyframe_id_remap.find(src);
-      if (it_remap == keyframe_id_remap.end()) {
-        SlamStderr("Failed to reindex keyframe, keyframe not found in remapped keyframes.\n");
-        return false;
-      }
-      dst = it_remap->second;
-      return true;
-    };
-
-    std::map<KeyFrameId, FrameId> keyframe_sources;
-    std::map<KeyFrameId, ChangeKeyframeInfo> keyframe_removed;
-
-    for (auto& it : keyframe_sources_) {
-      KeyFrameId keyframe_id;
-      if (!reindex_keyframe(it.first, keyframe_id)) {
-        return false;
-      }
-      keyframe_sources[keyframe_id] = it.second;
-    }
-
-    for (auto& it : keyframe_removed_) {
-      KeyFrameId keyframe_id;
-      if (!reindex_keyframe(it.first, keyframe_id)) {
-        return false;
-      }
-      auto& value = keyframe_removed[keyframe_id];
-      value = it.second;
-      if (!reindex_keyframe(value.new_node, value.new_node)) {
-        return false;
-      }
-    }
-
-    keyframe_removed_ = keyframe_removed;
-    keyframe_sources_ = keyframe_sources;
-  }
-
-  // Copy from slam
-  map_.database_ = const_map.database_;
-  return true;
+bool LocalizerAndMapper::SelectHeadKeyframe(KeyFrameId const_slam_keyframe_id, int64_t timestamp_ns) {
+  return map_.pose_graph_.SelectHeadKeyframe(const_slam_keyframe_id, timestamp_ns);
 }
 
 bool LocalizerAndMapper::CalcFramePose(FrameId frame_id, Isometry3T& pose) const {
@@ -309,17 +183,18 @@ bool LocalizerAndMapper::FindKeyframeByFrame(FrameId frame_id, KeyFrameId& keyfr
   return keyframe_id != InvalidKeyFrameId;
 }
 
-bool LocalizerAndMapper::FindFrameByKeyframe(KeyFrameId keyframe_id, FrameId& frame_id) const {
-  const auto it = keyframe_sources_.find(keyframe_id);
-  if (it != keyframe_sources_.end()) {
-    frame_id = it->second;
-    return true;
-  }
-  return false;
-}
-
 // current estimated pose
-Isometry3T LocalizerAndMapper::GetCurrentPose() const { return pose_estimate_; }
+Isometry3T LocalizerAndMapper::GetCurrentPose() const {
+  KeyFrameId head_keyframe;
+  if (!map_.GetPoseGraph().GetHeadKeyframe(head_keyframe)) {
+    return Isometry3T::Identity();
+  }
+  const Isometry3T* may_be_pose = map_.GetPoseGraphHypothesis().GetKeyframePose(head_keyframe);
+  if (may_be_pose) {
+    return *may_be_pose;
+  }
+  return Isometry3T::Identity();
+}
 
 bool LocalizerAndMapper::FlushActiveDatabase() const {
   if (!map_.database_) {
@@ -345,7 +220,7 @@ bool LocalizerAndMapper::AttachToExistingReadOnlyDatabase(const std::string& pat
   }
   SlamStdout("Successfully opened Slam Database %s.\n", url);
   if (!map_.AttachDatabase(lmdb, true)) {
-    SlamStderr("Failed to attach empty database \"%s\"", url);
+    SlamStderr("Failed to attach to existing read only database \"%s\"", url);
     return false;
   }
   return true;
@@ -410,7 +285,6 @@ void LocalizerAndMapper::DetectLoopClosure(const ILoopClosureSolver& loop_closur
   status.success = task.succesed;
   status.result_pose = task.result_pose;
   status.result_pose_covariance = task.result_pose_covariance;
-  status.reprojection_error = task.reprojection_error;
   status.good_landmarks_count = task.landmarks.size();
   status.pnp_landmarks_count = task.landmarks.size() + task.probes_types[LP_PNP_FAILED];
   status.tracked_landmarks_count =
@@ -423,7 +297,7 @@ void LocalizerAndMapper::DetectLoopClosure(const ILoopClosureSolver& loop_closur
 
 // Update Landmark Statistic in spatial index
 void LocalizerAndMapper::UpdateLandmarkProbeStatistics(
-    const std::vector<std::pair<LandmarkId, LandmarkProbe> >& discarded_landmarks) {
+    const std::vector<std::pair<LandmarkId, LandmarkProbe>>& discarded_landmarks) const {
   for (auto& discarded_landmark : discarded_landmarks) {
     map_.landmarks_spatial_index_->AddLandmarkProbeStatistic(discarded_landmark.first, discarded_landmark.second);
   }
@@ -435,7 +309,7 @@ bool LocalizerAndMapper::ApplyLoopClosureResult(const Isometry3T& world_from_lc,
   if (!map_.pose_graph_.GetHeadKeyframe(headkf)) {
     return false;
   }
-  PoseGraph::EdgeStat edge_stat;
+  PoseGraphEdgeStat edge_stat;
   const KeyFrameId lckf = FindKeyframeWithMostLandmarks(lc_landmarks, &edge_stat);
   if (lckf == InvalidKeyFrameId) {
     return false;
@@ -451,7 +325,7 @@ bool LocalizerAndMapper::ApplyLoopClosureResult(const Isometry3T& world_from_lc,
   }
 
   const Isometry3T headkf_from_world = world_from_headkf->inverse();
-  const Isometry3T& world_from_estimate = pose_estimate_;
+  const Isometry3T& world_from_estimate = GetCurrentPose();
   const Isometry3T headkf_from_estimate = headkf_from_world * world_from_estimate;
   const Isometry3T estimate_from_head = headkf_from_estimate.inverse();
   const Isometry3T world_from_correctedheadkf = world_from_lc * estimate_from_head;  // lc correction lc ~= estimate
@@ -473,20 +347,16 @@ bool LocalizerAndMapper::ApplyLoopClosureResult(const Isometry3T& world_from_lc,
 }
 
 // Optimize
-bool LocalizerAndMapper::OptimizePoseGraph(bool planar_constraints, int max_iterations) {
+bool LocalizerAndMapper::OptimizePoseGraph(bool planar_constraints) {
   TRACE_EVENT ev1 = profiler_domain_.trace_event("Optimize()", profiler_color_);
 
   if (pose_graph_optimizer_.empty()) {
     return false;
   }
 
-  OptimizeOptions optimize_options;
-  optimize_options.planar_constraints = planar_constraints;
-  optimize_options.max_iterations = max_iterations;
-  optimize_options.condition = SuccessfullLC;
   Isometry3T vo_to_head;
-  if (!map_.pose_graph_.Optimize(map_.pose_graph_hypothesis_, map_.pose_graph_hypothesis_for_swap_, vo_to_head,
-                                 optimize_options)) {
+  if (!map_.pose_graph_.Optimize(map_.pose_graph_hypothesis_, map_.pose_graph_hypothesis_for_swap_, planar_constraints,
+                                 vo_to_head)) {
     return false;
   }
 
@@ -505,181 +375,11 @@ bool LocalizerAndMapper::OptimizePoseGraph(bool planar_constraints, int max_iter
 
   // ok, so use new poses
   map_.pose_graph_hypothesis_.swap(map_.pose_graph_hypothesis_for_swap_);
-  Isometry3T pose_estimate = this->pose_estimate_;
-  pose_estimate = pose_estimate * vo_to_head;
-  RemoveScaleFromTransform(pose_estimate);
-  pose_estimate_ = pose_estimate;
 
   if (map_.database_) {
     map_.pose_graph_hypothesis_.PutToDatabase(map_.database_.get());
   }
   return true;
-}
-
-void LocalizerAndMapper::MergeLandmarks(
-    KeyFrameId keyframe_id, float uv_norm_min_distance,
-    std::function<bool(LandmarkId landmark0, LandmarkId landmark1, float ncc)> func) {
-  TRACE_EVENT ev = profiler_domain_.trace_event("MergeLandmarks()", profiler_color_);
-
-  int uv_grid_size = static_cast<int>(2 / uv_norm_min_distance);
-  uv_grid_size = std::max(uv_grid_size, 1);
-  uv_grid_size = std::min(uv_grid_size, 32);
-
-  auto xy_grid_key = [&](int x, int y) -> size_t {
-    x = std::max(x, 0);
-    x = std::min(x, uv_grid_size - 1);
-    y = std::max(y, 0);
-    y = std::min(y, uv_grid_size - 1);
-    return x + y * uv_grid_size;
-  };
-
-  // grid key from uv_norm
-  auto uv_grid_key = [&](Vector2T uv_norm) -> size_t {
-    uv_norm = uv_norm * 0.5 + Vector2T(0.5, 0.5);
-    int x = floor(uv_norm.x() * uv_grid_size);
-    int y = floor(uv_norm.y() * uv_grid_size);
-    return xy_grid_key(x, y);
-  };
-
-  // fetch all landmarks from keyframe
-  struct LandmarkInfo {
-    LandmarkId id;
-    Vector2T uv_norm;
-    size_t key;
-  };
-  std::vector<LandmarkInfo> landmarks_in_kf;
-  size_t landmark_count = map_.pose_graph_.QueryKeyframeLandmarks(keyframe_id, [](LandmarkId) { return false; });
-  landmarks_in_kf.reserve(landmark_count);
-
-  map_.pose_graph_.QueryKeyframeLandmarks(keyframe_id, [&](LandmarkId landmark_id) {
-    LandmarkInfo landmark_info;
-    landmark_info.id = landmark_id;
-
-    if (!map_.landmarks_spatial_index_->GetLandmarkRelation(landmark_id, keyframe_id, &landmark_info.uv_norm)) {
-      return true;
-    }
-
-    landmark_info.key = uv_grid_key(landmark_info.uv_norm);
-
-    landmarks_in_kf.emplace_back(landmark_info);
-
-    return true;
-  });
-  landmark_count = landmarks_in_kf.size();
-
-  // grid list: sorted by keys
-  std::vector<int> uv_grid(landmark_count);
-
-  for (size_t i = 0; i < landmark_count; i++) {
-    uv_grid[i] = i;
-  }
-
-  std::sort(uv_grid.begin(), uv_grid.end(),
-            [&](const int a, const int b) { return landmarks_in_kf[a].key < landmarks_in_kf[b].key; });
-
-  auto feed_cell = [&](int begin) {
-    size_t key = landmarks_in_kf[uv_grid[begin]].key;
-    size_t end = begin + 1;
-
-    for (; end < uv_grid.size(); end++) {
-      size_t key_end = landmarks_in_kf[uv_grid[end]].key;
-
-      if (key != key_end) {
-        break;
-      }
-    }
-
-    return end;
-  };
-  auto cell_by_key = [&](size_t key, size_t& begin, size_t& end) {
-    auto it = std::lower_bound(uv_grid.begin(), uv_grid.end(), key,
-                               [landmarks_in_kf](const int& p_lmi, const size_t key) -> bool {
-                                 const LandmarkInfo& lmi = landmarks_in_kf[p_lmi];
-                                 return lmi.key < key;
-                               });
-
-    if (it == uv_grid.end()) {
-      begin = 0, end = 0;
-      return;
-    }
-
-    begin = std::distance(uv_grid.begin(), it);
-    const LandmarkInfo& lmi = landmarks_in_kf[uv_grid[begin]];
-
-    if (lmi.key != key) {
-      begin = 0, end = 0;
-      return;
-    }
-
-    end = feed_cell(begin);
-  };
-
-  int match_count = 0;
-  auto match = [&](int i0, int i1) {
-    // test uv distance
-    float dist = (landmarks_in_kf[i0].uv_norm - landmarks_in_kf[i1].uv_norm).squaredNorm();
-
-    if (dist > uv_norm_min_distance * uv_norm_min_distance) {
-      return;
-    }
-
-    // match feature_descriptors
-    LandmarkId l0 = landmarks_in_kf[i0].id;
-    LandmarkId l1 = landmarks_in_kf[i1].id;
-    const auto fd0 = map_.landmarks_spatial_index_->GetLandmarkFeatureDescriptor(l0);
-    const auto fd1 = map_.landmarks_spatial_index_->GetLandmarkFeatureDescriptor(l1);
-
-    if (!fd0 || !fd1) {
-      return;
-    }
-
-    auto ncc = map_.feature_descriptor_ops_->Match(fd0, fd1);
-    match_count++;
-
-    if (ncc > 0) {
-      func(l0, l1, ncc);
-    }
-  };
-
-  // for each cell in grid:
-  for (size_t begin = 0, end = 0; begin < landmark_count; begin = end) {
-    end = feed_cell(begin);
-
-    // match landmarks in this cell
-    for (size_t i0 = begin; i0 < end; i0++) {
-      for (size_t i1 = i0 + 1; i1 < end; i1++) {
-        match(uv_grid[i0], uv_grid[i1]);
-      }
-    }
-
-    size_t key1 = landmarks_in_kf[uv_grid[begin]].key;
-    int y = key1 / uv_grid_size;
-    int x = key1 - uv_grid_size * y;
-
-    // match landmarks in 3 neighbours cells
-    static const std::pair<int, int> dxdys[] = {{1, 0}, {1, 1}, {0, 1}};
-
-    for (auto dxdy : dxdys) {
-      if (x + dxdy.first >= uv_grid_size || y + dxdy.second >= uv_grid_size) {
-        continue;
-      }
-
-      size_t key2 = xy_grid_key(x + dxdy.first, y + dxdy.second);
-      size_t begin2, end2;
-      cell_by_key(key2, begin2, end2);
-
-      if (begin2 == end2) {
-        continue;
-      }
-
-      // all permutation this cell to neighbours
-      for (size_t i0 = begin; i0 < end; i0++) {
-        for (size_t i1 = begin2; i1 < end2; i1++) {
-          match(uv_grid[i0], uv_grid[i1]);
-        }
-      }
-    }
-  }
 }
 
 // callback for landmarks_spatial_index_->RemoveDeadLandmarks()
@@ -693,19 +393,20 @@ void LocalizerAndMapper::RebuildSpatialIndex() {
 
   map_.landmarks_spatial_index_->RebuildAllGridCells(map_.pose_graph_hypothesis_);
 
-  std::function<void(LandmarkId, KeyFrameId)> func_remove_from_keyframe =
-      [&](LandmarkId landmark_id, KeyFrameId keyframe_id) { this->RemoveLandmarkRelation(landmark_id, keyframe_id); };
-  map_.landmarks_spatial_index_->ReduceLandmarks("probes_composed");
+  std::function func_remove_from_keyframe = [&](LandmarkId landmark_id, KeyFrameId keyframe_id) {
+    this->RemoveLandmarkRelation(landmark_id, keyframe_id);
+  };
+  map_.landmarks_spatial_index_->ReduceLandmarks();
 
   map_.landmarks_spatial_index_->RemoveDeadLandmarks(func_remove_from_keyframe);
 }
 
 KeyFrameId LocalizerAndMapper::FindKeyframeWithMostLandmarks(const std::vector<LandmarkInSolver>& landmarks,
-                                                             PoseGraph::EdgeStat* edge_stat) const {
+                                                             PoseGraphEdgeStat* edge_stat) const {
   KeyFrameId pose_graph_head = InvalidKeyFrameId;
   map_.pose_graph_.GetHeadKeyframe(pose_graph_head);  // can set to InvalidKeyFrameId
 
-  std::map<KeyFrameId, PoseGraph::EdgeStat> keyframes_of_landmarks;
+  std::map<KeyFrameId, PoseGraphEdgeStat> keyframes_of_landmarks;
 
   for (const auto& landmark_in_solver : landmarks) {
     map_.landmarks_spatial_index_->QueryLandmarkRelations(landmark_in_solver.id,
@@ -724,7 +425,7 @@ KeyFrameId LocalizerAndMapper::FindKeyframeWithMostLandmarks(const std::vector<L
     return InvalidKeyFrameId;
   }
 
-  using keyframesOfLandmarksKeyValue = std::pair<KeyFrameId, PoseGraph::EdgeStat>;
+  using keyframesOfLandmarksKeyValue = std::pair<KeyFrameId, PoseGraphEdgeStat>;
   auto max_it = std::max_element(keyframes_of_landmarks.begin(), keyframes_of_landmarks.end(),
                                  [&](const keyframesOfLandmarksKeyValue& a1, const keyframesOfLandmarksKeyValue& a2) {
                                    float w1 = a1.second.tracks3d_number;
@@ -763,7 +464,7 @@ KeyFrameId LocalizerAndMapper::FindKeyframeWithMostLandmarks(const std::vector<L
 }
 
 bool LocalizerAndMapper::AddEdgeToPoseGraph(const KeyFrameId start, KeyFrameId end, const Isometry3T& start_from_end,
-                                            const Matrix6T& start_from_end_covariance, PoseGraph::EdgeStat& stat) {
+                                            const Matrix6T& start_from_end_covariance, const PoseGraphEdgeStat& stat) {
   TRACE_EVENT ev = profiler_domain_.trace_event("AddEdgeToPoseGraph()", profiler_color_);
 
   // discard if existed edges has more weight
@@ -781,12 +482,12 @@ bool LocalizerAndMapper::AddEdgeToPoseGraph(const KeyFrameId start, KeyFrameId e
 }
 
 // Reduce landmarks number
-bool LocalizerAndMapper::ReduceLandmarks(const char* weight_func) {
+bool LocalizerAndMapper::ReduceLandmarks() {
   TRACE_EVENT ev = profiler_domain_.trace_event("ReduceLandmarks()", profiler_color_);
 
   std::function<void(LandmarkId, KeyFrameId)> func_remove_from_keyframe =
       [&](LandmarkId landmark_id, KeyFrameId keyframe_id) { this->RemoveLandmarkRelation(landmark_id, keyframe_id); };
-  map_.landmarks_spatial_index_->ReduceLandmarks(weight_func);
+  map_.landmarks_spatial_index_->ReduceLandmarks();
   map_.landmarks_spatial_index_->RemoveDeadLandmarks(func_remove_from_keyframe);
 
   FlushActiveDatabase();
@@ -814,6 +515,7 @@ void LocalizerAndMapper::ReduceKeyframes() {
       map_.pose_graph_.ReduceSingleEdge(edge_id, map_.pose_graph_hypothesis_, update_landmark_keyframe);
     }
   }
+  RERUN(map_.logPoseGraph);
 }
 
 const Map& LocalizerAndMapper::GetMap() const { return map_; }
@@ -831,7 +533,7 @@ bool LocalizerAndMapper::GetLastKeyframePoseAndTimestamp(Isometry3T& last_keyfra
   if (!p_head_keyframe_pose) {
     return false;
   }
-  const PoseGraph::KeyFrame& head_keyframe = pg.GetKeyframe(head_keyframe_id);
+  const PoseGraphKeyFrame& head_keyframe = pg.GetKeyframe(head_keyframe_id);
   last_keyframe_pose = *p_head_keyframe_pose;
   last_keyframe_ts = head_keyframe.keyframe_info.timestamp_ns;
   return true;

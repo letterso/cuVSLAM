@@ -26,7 +26,7 @@
 namespace cuvslam::sba_imu {
 
 // use IMU frame to simplify jacobians
-// world frame should be bound to the Keyframe, where gravity was obtained
+// world frame should be bound to the Keyframe where gravity was obtained (OpenCV: +Y down; gravity ~ +Y when upright)
 struct Pose {
   Isometry3T w_from_imu = Isometry3T::Identity();
   Vector3T velocity = Vector3T::Zero();
@@ -69,17 +69,18 @@ struct ImuBAProblem {
   std::vector<Pose> rig_poses = {};
   int32_t num_fixed_key_frames = 0;
   camera::Rig rig = {};
-  Vector3T gravity = Vector3T::Zero();
+  Vector3T gravity = Vector3T::Zero();  ///< World-frame gravity acceleration (same convention as inertial_optimization)
 
   // solver options
   int32_t max_iterations = 7;
   float robustifier_scale = 1.f;
   float robustifier_scale_pose = 10.f;
 
-  float prior_gyro = 1e2f;
-  float prior_acc = 1e10f;
-
-  float imu_penalty = 1e-3;
+  float prior_gyro = 0;
+  float prior_acc = 0;
+  float imu_penalty = 1;
+  float acc_rw_penalty = -1;           // penalty for acc bias random walk; -1 means use imu_penalty
+  float boundary_imu_penalty = 1e-2f;  // downweight IMU edge at fixed/optimizable boundary
 
   // solver statistic
   int32_t iterations = 0;

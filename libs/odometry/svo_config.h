@@ -35,6 +35,13 @@ struct KeyFrameSettings {
   int64_t max_timedelta_between_kfs_s = 60;
 };
 
+// Bundles all per-frame setting overrides into a single struct
+struct TrackPerFrameSettings {
+  sof::Settings sof;
+  KeyFrameSettings kf;
+  // TODO[Zheng]: Future per-frame settings (PnP, ICP, RANSAC, …) go here as additional fields.
+};
+
 struct Settings {
   sba::Settings sba_settings;
   sof::Settings sof_settings;

@@ -58,8 +58,7 @@ TEST(TestStatisticalVariable, SVTest) {
   NamedStatisticalVariable<float> statVar;
   std::vector<float> statVec;
 
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
   std::normal_distribution<float> nd(0.5f, 2.5f);
 
   const size_t totalCount = 10000;

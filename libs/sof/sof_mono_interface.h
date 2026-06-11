@@ -23,6 +23,7 @@
 
 #include "sof/image_context.h"
 #include "sof/sof.h"
+#include "sof/sof_config.h"
 
 namespace cuvslam::sof {
 
@@ -39,11 +40,11 @@ class IMonoSOF {
 public:
   virtual ~IMonoSOF() = default;
 
-  // mask_src - optional mask
   virtual void track(const ImageAndSource& curr_image, const ImageContextPtr& prev_image,
-                     const Isometry3T& predicted_world_from_rig, const ImageSource* mask_src = nullptr) = 0;
+                     const Isometry3T& predicted_world_from_rig, const Settings& sof_settings,
+                     const ImageSource* mask_src = nullptr) = 0;
 
-  virtual const TracksVector& finish(FrameState& state) = 0;
+  virtual const TracksVector& finish(FrameState& state, const Settings& sof_settings) = 0;
 
   virtual void reset() = 0;
 

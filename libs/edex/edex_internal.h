@@ -591,6 +591,8 @@ inline bool ReadIMU(const Json::Value& root, IMU& imu) {
         imu.coordinate_system = CoordinateSystem::ROS;
       } else if (coordinate_system == "cuvslam") {
         imu.coordinate_system = CoordinateSystem::CUVSLAM;
+      } else if (coordinate_system == "opencv") {
+        imu.coordinate_system = CoordinateSystem::OPENCV;
       } else {
         TraceError("Coordinate system \"%s\" assigned to \"%s\" is unknown", coordinate_system.c_str(),
                    EDEX_IMU_COORD_SYSTEM);

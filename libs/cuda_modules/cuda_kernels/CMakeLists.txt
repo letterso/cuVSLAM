@@ -30,16 +30,22 @@ set(SOURCES
 
 add_library(cuda_kernels STATIC ${SOURCES})
 
+if(CUVSLAM_CUDA_ARCH_ALL)
+  # CMake < 3.23 doesn't support "all" in CUDA_ARCHITECTURES property.
+  # Use -arch=all nvcc flag directly (preserves original behavior).
+  set_target_properties(cuda_kernels PROPERTIES CUDA_ARCHITECTURES OFF)
+  target_compile_options(cuda_kernels PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-arch=all>)
+else()
+  set_target_properties(cuda_kernels PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+endif()
+
 set_target_properties(cuda_kernels PROPERTIES
-    # CMAKE_CUDA_ARCHITECTURES is set to some unusable value by default, so we can't use it to choose architectures
-    # CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
 target_compile_options(cuda_kernels PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-fPIC,-fvisibility=hidden>
-    $<$<COMPILE_LANGUAGE:CUDA>:-arch=all> # instead of CMAKE_CUDA_ARCHITECTURES
     # Enable device debug info for compute-sanitizer support
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>>:-G>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:RelWithDebInfo>>:-lineinfo>

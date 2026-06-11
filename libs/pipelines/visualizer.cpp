@@ -91,15 +91,12 @@ void logLandmarks(const std::unordered_map<TrackId, Vector3T>& landmarks, const 
     // Transform landmark from world frame to camera frame
     Vector3T landmark_camera = camera_from_world * landmark_world;
 
-    // Check if landmark is in front of the camera (negative Z in cuVSLAM coordinate system)
-    if (landmark_camera.z() >= 0.0f) {
-      continue;  // Skip landmarks behind the camera
+    // OpenCV camera: +Z forward; skip behind or on the focal plane.
+    if (landmark_camera.z() <= 0.0f) {
+      continue;
     }
 
-    // Project 3D point to normalized image coordinates
-    // Note: Use -landmark_camera.z() because cuVSLAM cameras look down -Z axis
-    Vector2T normalized_coords(landmark_camera.x() / (landmark_camera.z()),
-                               landmark_camera.y() / (landmark_camera.z()));
+    Vector2T normalized_coords(landmark_camera.x() / landmark_camera.z(), landmark_camera.y() / landmark_camera.z());
 
     // Convert normalized coordinates to pixel UV coordinates using camera intrinsics
     Vector2T uv_coords;
@@ -140,15 +137,12 @@ void logLandmarks(const std::vector<pipelines::Landmark>& landmarks, const Isome
     // Transform landmark from world frame to camera frame
     Vector3T landmark_camera = camera_from_world * landmark_world;
 
-    // Check if landmark is in front of the camera (negative Z in cuVSLAM coordinate system)
-    if (landmark_camera.z() >= 0.0f) {
-      continue;  // Skip landmarks behind the camera
+    // OpenCV camera: +Z forward; skip behind or on the focal plane.
+    if (landmark_camera.z() <= 0.0f) {
+      continue;
     }
 
-    // Project 3D point to normalized image coordinates
-    // Note: Use -landmark_camera.z() because cuVSLAM cameras look down -Z axis
-    Vector2T normalized_coords(landmark_camera.x() / (landmark_camera.z()),
-                               landmark_camera.y() / (landmark_camera.z()));
+    Vector2T normalized_coords(landmark_camera.x() / landmark_camera.z(), landmark_camera.y() / landmark_camera.z());
 
     // Convert normalized coordinates to pixel UV coordinates using camera intrinsics
     Vector2T uv_coords;
@@ -238,13 +232,14 @@ void logTrajectory(const Isometry3T& rig_from_world, const std::string& viewport
   trajectory_positions.push_back(current_pos);
 
   // Log current camera position as a point
-  recording.log(viewport_name + "/position", rerun::Points3D(current_pos).with_colors(color).with_radii(0.02f));
+  recording.log(viewport_name + "/position",
+                rerun::Points3D(current_pos).with_colors(Color(0, 255, 0)).with_radii({0.001f}));
 
   // Log trajectory as a line strip (if we have at least 2 points)
   if (trajectory_positions.size() >= 2) {
-    recording.log(viewport_name + "/path", rerun::LineStrips3D(rerun::components::LineStrip3D(trajectory_positions))
-                                               .with_colors(color)
-                                               .with_radii(0.005f));
+    recording.log(
+        viewport_name + "/path",
+        rerun::LineStrips3D(rerun::components::LineStrip3D(trajectory_positions)).with_colors(color).with_radii(0.5f));
   }
 
   // Optionally show camera orientation axes

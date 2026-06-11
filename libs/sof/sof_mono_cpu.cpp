@@ -31,16 +31,15 @@ MonoSOFCPU::MonoSOFCPU(CameraId cam_id, const camera::ICameraModel &intrinsics, 
                        FeaturePredictorPtr feature_predictor, const Settings &sof_settings)
     : MonoSOFBase(cam_id, std::move(selector), feature_predictor),
       intrinsics_(intrinsics),
-      sof_settings_(sof_settings),
-      feature_tracker_(CreateTracker(sof_settings.tracker.c_str())) {}
+      feature_tracker_(CreateTracker(sof_settings.tracker)) {}
 
 void MonoSOFCPU::track(const ImageAndSource &curr_image, const ImageContextPtr &prev_image,
-                       const Isometry3T &worldFromRig, const ImageSource *mask_src) {
+                       const Isometry3T &worldFromRig, const Settings &sof_settings, const ImageSource *mask_src) {
   TRACE_EVENT ev = profiler_domain_.trace_event("MonotrackNextFrame()", profiler_color_);
 
   assert(curr_image.source.type == ImageSource::U8);
 
-  bool res = curr_image.image->build_cpu_image_pyramid(curr_image.source, sof_settings_.box3_prefilter);
+  bool res = curr_image.image->build_cpu_image_pyramid(curr_image.source, sof_settings.box3_prefilter);
   if (!res) {
     TraceError("Failed to build cpu image pyramid");
   }
@@ -70,14 +69,14 @@ void MonoSOFCPU::track(const ImageAndSource &curr_image, const ImageContextPtr &
     filterByPredictionError();
     log::Value<LogFrames>("tracks2d_killed_count", tracks_.size() - tracks_.get_num_alive());
 
-    if (sof_settings_.ransac_filter) {
+    if (sof_settings.ransac_filter) {
       // can kill tracks
       ransacFilter(intrinsics_, last_keyframe_tracks_, tracks_);
     }
 
     // can kill tracks
-    KillTracksOnBorder(w, h, sof_settings_.border_top, sof_settings_.border_bottom, sof_settings_.border_left,
-                       sof_settings_.border_right, tracks_);
+    KillTracksOnBorder(w, h, sof_settings.border_top, sof_settings.border_bottom, sof_settings.border_left,
+                       sof_settings.border_right, tracks_);
     // can kill tracks
     KillTracksWithinMask();
 
@@ -94,7 +93,7 @@ void MonoSOFCPU::track(const ImageAndSource &curr_image, const ImageContextPtr &
   if (feature_selector_->select(tracks_)) {
     last_frame_state_ = FrameState::Key;
     std::vector<Vector2T> new_tracks;
-    addFeatures(curr_image.image, tracks_, new_tracks);
+    addFeatures(curr_image.image, tracks_, new_tracks, sof_settings);
 
     tracks_.add(cam_id_, new_tracks);
 
@@ -115,21 +114,21 @@ void MonoSOFCPU::track(const ImageAndSource &curr_image, const ImageContextPtr &
   tracks_.remove_dead_tracks();
 }
 
-const TracksVector &MonoSOFCPU::finish(FrameState &state) {
+const TracksVector &MonoSOFCPU::finish(FrameState &state, [[maybe_unused]] const Settings &sof_settings) {
   state = last_frame_state_;
   return tracks_;
 }
 
 void MonoSOFCPU::addFeatures(const ImageContextPtr &image, TracksVector &existing_tracks,
-                             std::vector<Vector2T> &new_tracks) {
+                             std::vector<Vector2T> &new_tracks, const Settings &sof_settings) {
   const size_t num_alive_tracks = existing_tracks.get_num_alive();
-  assert(num_alive_tracks <= static_cast<uint32_t>(sof_settings_.num_desired_tracks) &&
+  assert(num_alive_tracks <= static_cast<uint32_t>(sof_settings.num_desired_tracks) &&
          num_alive_tracks <= existing_tracks.size());
-  const size_t nDesiredPointsToSelect = sof_settings_.num_desired_tracks - num_alive_tracks;
+  const size_t nDesiredPointsToSelect = sof_settings.num_desired_tracks - num_alive_tracks;
 
-  detector_.computeGFTTAndSelectFeatures(image->cpu_gradient_pyramid(), sof_settings_.border_top,
-                                         sof_settings_.border_bottom, sof_settings_.border_left,
-                                         sof_settings_.border_right, input_mask_present_ ? &input_mask_ : nullptr,
+  detector_.computeGFTTAndSelectFeatures(image->cpu_gradient_pyramid(), sof_settings.border_top,
+                                         sof_settings.border_bottom, sof_settings.border_left,
+                                         sof_settings.border_right, input_mask_present_ ? &input_mask_ : nullptr,
                                          existing_tracks, nDesiredPointsToSelect, new_tracks);
 }
 

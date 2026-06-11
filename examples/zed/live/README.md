@@ -8,6 +8,17 @@ camera
 Refer to the [Installation ZED SDK](../README.md#zed-sdk-installation) for instructions on installing and configuring
 all required dependencies.
 
+## Camera Resolution and FPS
+
+Both scripts open the camera at `RESOLUTION = sl.RESOLUTION.AUTO`, letting the ZED SDK pick the camera's native mode
+(HD720 on USB ZED, HD1200 on ZED X). The default frame rate is 60 FPS for `run_stereo.py` and 30 FPS for
+`run_rgbd.py`. To pick a specific mode, edit `RESOLUTION` at the top of the script &mdash; see
+[Stereolabs' resolution and FPS matrix](https://www.stereolabs.com/docs/video/camera-controls#selecting-a-resolution)
+for the supported (camera, mode, FPS) combinations.
+
+If the FPS you set isn't supported at the chosen resolution, the ZED SDK falls back to the highest supported value for
+that mode and prints a warning &mdash; tracking still runs.
+
 ## Running Stereo Visual Odometry
 
 ### Using Distorted Images

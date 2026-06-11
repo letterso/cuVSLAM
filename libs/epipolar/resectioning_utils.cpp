@@ -79,7 +79,7 @@ bool OptimizeCameraExtrinsicsExpMap(Vector3TVectorCIt points3DBeginIt, Vector3TV
   ST functor(params);
   Eigen::LevenbergMarquardt<ST> lm(functor);
 
-  lm.setMaxfev(20);  // limit iterations
+  lm.setMaxfev(_Size == 3 ? 80 : 20);  // rotation-only needs more iterations when the scene is very large
   retCode = lm_minimize(lm, twistRot);
   const float norm = lm.fnorm() / functor.values();
 

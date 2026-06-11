@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 
 #include "camera/camera.h"
 #include "camera/observation.h"
@@ -27,8 +28,12 @@
 
 namespace cuvslam::sof {
 
+enum class TrackerType { LK, KLT, LKHorizontal, KLTHorizontal };
+
+TrackerType ParseTrackerType(const std::string& name);
+
 class IFeatureTracker;
-std::unique_ptr<IFeatureTracker> CreateTracker(const char*);
+std::unique_ptr<IFeatureTracker> CreateTracker(TrackerType type);
 
 // keep track position in uv space (in float pixels')
 class Track {

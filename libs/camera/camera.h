@@ -18,11 +18,13 @@
 #pragma once
 
 #include <memory>
+#include <stdexcept>
 
 #include "common/affine.h"
 #include "common/types.h"
 #include "common/unaligned_types.h"
 #include "common/vector_2t.h"
+#include "cuvslam/cuvslam2.h"
 
 namespace cuvslam::camera {
 
@@ -47,13 +49,8 @@ namespace cuvslam::camera {
 //    Min/max coordinates can be positive/negative.
 //    [-1.f, 1.f] is an example of good mapping.
 //    Maximum radius is limited by max_normalized_uv_radius2.
-// 4) xy - like normalized_uv but without lens distortion (AKA undistorted coordinates) and double-flipped
-//    (0.f, 0.f) also can be considered as lens center.
-//    maximum values depends on lens distortion, can be big values for example in case of fisheye.
-//    maximum radius is limited with max_xy_radius
-//    xy is double flipped (flip x and flip y) from uv. Consider xy as image from camera obscura.
-//    Since Z is pointing behind the camera, when we move forward Z is negative. At the time of projection,
-//    X/Z and Y/Z will be negative.
+// 4) xy - undistorted normalized image coordinates (OpenCV-style): x = (u-cx)/fx, y = (v-cy)/fy after undistortion.
+//    (0.f, 0.f) is the lens center in normalized space. max_xy_radius limits validity.
 class ICameraModel {
 public:
   ICameraModel(const Vector2T& resolution,  // Not used in calculations. see focal
@@ -81,7 +78,6 @@ private:
   const float max_normalized_uv_radius2_;  // square of radius of validity for rejecting denormalizing outside points
   const float max_xy_radius2_;             // square of radius of validity for rejecting normalizing outside points
 
-  bool is_invertible_ = false;
   Affine2T calibration_;
   Affine2T inv_calibration_;
 };
@@ -172,13 +168,22 @@ private:
   float P2_;
 };
 
+/// Parse distortion model name to enum.
+inline Distortion::Model StringToDistortionModel(std::string_view str) {
+  if (str == "polynomial") return Distortion::Model::Polynomial;
+  if (str == "brown5k") return Distortion::Model::Brown;
+  if (str == "pinhole") return Distortion::Model::Pinhole;
+  if (str == "fisheye4" || str == "fisheye") return Distortion::Model::Fisheye;
+  throw std::invalid_argument{"Incorrect distortion model: " + std::string{str}};
+}
+
 // Factory function for camera models.
 // Instead of accepting named distortion parameters it accepts parameters array.
 // Order of parameters in array is the same as in appropriate constructors except for PolynomialCameraModel,
 // where parameters order in array is K1, K2, P1, P2, K3, K4, K5, K6 as in cv::initUndistortRectifyMap and in ROS
-// messages. Returns false if distortion model is unsupported or number of parameters is wrong.
+// messages. Returns nullptr if distortion model is unsupported or number of parameters is wrong.
 std::unique_ptr<ICameraModel> CreateCameraModel(const Vector2T& resolution, const Vector2T& focal,
-                                                const Vector2T& principal, const std::string& distortion_model,
+                                                const Vector2T& principal, Distortion::Model model,
                                                 const float* parameters, int32_t num_parameters);
 
 }  // namespace cuvslam::camera

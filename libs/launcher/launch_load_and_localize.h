@@ -15,15 +15,12 @@
  * of the software or derivative works thereof, you agree to be bound by this License.
  */
 
-#pragma once
+#include "slam/async_slam/async_slam.h"
+#include "sof/image_context.h"
 
-#include <string>
-#include <vector>
+namespace cuvslam::launcher {
 
-#include "camera/rig.h"
+void LaunchLoadMapAndLocalize(slam::AsyncSlam& slam, int64_t timestamp_ns, const sof::Images& current_images,
+                              bool use_gpu);
 
-namespace cuvslam::slam {
-
-bool MergeDatabases(const camera::Rig& rig, const std::vector<std::string>& dbs, const std::string& slam_db_out);
-
-}  // namespace cuvslam::slam
+}  // namespace cuvslam::launcher

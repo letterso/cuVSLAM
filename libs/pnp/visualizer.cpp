@@ -57,15 +57,11 @@ void logLandmarks(const std::vector<std::reference_wrapper<const Vector3T>>& lan
     // Transform landmark from world frame to camera frame
     Vector3T landmark_camera = camera_from_world * landmark_world;
 
-    // Check if landmark is in front of the camera (negative Z in cuVSLAM coordinate system)
-    if (landmark_camera.z() >= 0.0f) {
-      continue;  // Skip landmarks behind the camera
+    if (landmark_camera.z() <= 0.0f) {
+      continue;
     }
 
-    // Project 3D point to normalized image coordinates
-    // Note: Use -landmark_camera.z() because cuVSLAM cameras look down -Z axis
-    Vector2T normalized_coords(landmark_camera.x() / (landmark_camera.z()),
-                               landmark_camera.y() / (landmark_camera.z()));
+    Vector2T normalized_coords(landmark_camera.x() / landmark_camera.z(), landmark_camera.y() / landmark_camera.z());
 
     // Convert normalized coordinates to pixel UV coordinates using camera intrinsics
     Vector2T uv_coords;

@@ -46,6 +46,8 @@ struct PGOInput {
   float planar_weight = 1;
 
   float robustifier = 0.1f;
+
+  void clear();
 };
 
 class PGO {

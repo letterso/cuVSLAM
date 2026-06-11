@@ -19,20 +19,26 @@
 
 namespace cuvslam::slam {
 
-Tail::Tail(const LocalizerAndMapper& slam) : slam_{slam} {}
-
-Isometry3T Tail::GetTipPose() const {
+std::optional<std::pair<int64_t, Isometry3T>> Tail::GetTip() const {
   std::lock_guard locker(tail_guard_);
 
   if (tail_.empty()) {
-    return Isometry3T::Identity();
+    return {};
   }
-  return tail_.back().second;
+  return tail_.back();
 }
 
-void Tail::Grow(int64_t timestamp_ns, const Isometry3T& pose) {
+bool Tail::UpdateTimeByOdometry(int64_t timestamp_ns, const Isometry3T& pose) {
   std::lock_guard locker(tail_guard_);
-  tail_.push_back({timestamp_ns, pose});
+  if (!tail_.empty()) {
+    const int64_t last_timestamp = tail_.back().first;
+    if (last_timestamp > timestamp_ns) {
+      TraceWarning("Ignore odometry frame.");
+      return false;  // we already have more fresh data
+    }
+  }
+  tail_.emplace_back(timestamp_ns, pose);
+  return true;
 }
 
 void Tail::Clear() {
@@ -41,34 +47,34 @@ void Tail::Clear() {
 }
 
 // called from slam thread
-void Tail::MakeShortAndFollowBody() {
-  Isometry3T last_keyframe_pose;
-  int64_t last_keyframe_ts;
-  if (!slam_.GetLastKeyframePoseAndTimestamp(last_keyframe_pose, last_keyframe_ts)) {
-    return;
-  }
-
+void Tail::UpdatePoseBySLAM(int64_t timestamp_ns, const Isometry3T& pose) {
   std::lock_guard locker(tail_guard_);
-  while (!tail_.empty() && tail_.front().first < last_keyframe_ts) {
-    tail_.pop_front();
-  }
-  if (tail_.empty() || tail_.front().first != last_keyframe_ts) {
+
+  if (tail_.empty() || tail_.back().first < timestamp_ns) {
+    // SLAM has the latest known pose. For example if user load map with timestamp in future
+    tail_.clear();
+    tail_.emplace_back(timestamp_ns, pose);
     return;
   }
-  const Isometry3T& old_pose = tail_.front().second;
-  const Isometry3T& new_pose = last_keyframe_pose;
+  // else SLAM updates Tail in the past
 
-  if (old_pose.isApprox(new_pose, 0.01f)) {  // neither pose should have scale
+  auto it = tail_.begin();
+  while (it != tail_.end() && it->first < timestamp_ns) {
+    ++it;
+  }
+  const Isometry3T& old_pose = it->second;
+
+  if (old_pose.isApprox(pose, 0.01f)) {  // neither pose should have scale
     return;
   }
 
-  const Isometry3T delta = old_pose.inverse() * new_pose;
-  for (auto& p : tail_) {
-    Isometry3T updated = p.second * delta;
+  const Isometry3T delta = old_pose.inverse() * pose;
+  while (it != tail_.end()) {
+    Isometry3T updated = it->second * delta;
     RemoveScaleFromTransform(updated);  // remove scale caused by floating-point errors
-    p.second = updated;
+    it->second = updated;
+    ++it;
   }
-  tail_.front().second = new_pose;
 }
 
 }  // namespace cuvslam::slam

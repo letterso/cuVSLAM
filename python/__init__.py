@@ -31,10 +31,14 @@ from . import pycuvslam as core
 # Import the wrapper class
 from .tracker import Tracker
 
+# Python helper functions for file-based config loading
+from . import utils
+
 # # Explicit exports for better IntelliSense
 __all__ = [
     'Tracker',
     'core',
+    'utils',
     'get_version',
     'set_verbosity',
     'warm_up_gpu',

@@ -15,12 +15,60 @@
  * of the software or derivative works thereof, you agree to be bound by this License.
  */
 
+#include <vector>
+
 #include "slam/map/map.h"
+
+#include "pipelines/visualizer.h"
 
 #include "slam/map/descriptor/st_descriptor_gpu_ops.h"
 #include "slam/map/descriptor/st_descriptor_ops.h"
 
 namespace cuvslam::slam {
+
+namespace {
+
+#ifdef USE_RERUN
+
+void LogPoseGraphNodes(rerun::RecordingStream& recording, const PoseGraph& pg, const PoseGraphHypothesis& pgh) {
+  // calculate pose graph nodes number
+  int num_pg_nodes = 0;
+  pg.QueryKeyframes([&](KeyFrameId) { ++num_pg_nodes; });
+
+  // allocate space
+  thread_local std::vector<rerun::Position3D> poses;
+  poses.clear();
+  poses.reserve(num_pg_nodes);
+
+  pg.QueryKeyframes([&](KeyFrameId keyframe_id) {
+    const Isometry3T* pose_src = pgh.GetKeyframePose(keyframe_id);
+    if (pose_src) {
+      const Vector3T& p = pose_src->translation();
+      poses.emplace_back(p.x(), p.y(), p.z());
+    }
+  });
+  recording.log("world/slam_pose_graph_nodes", rerun::Points3D(poses).with_colors(Color(0, 0, 255)).with_radii(2.f));
+}
+
+void LogPoseGraphHead(rerun::RecordingStream& recording, const PoseGraph& pg, const PoseGraphHypothesis& pgh) {
+  KeyFrameId head_keyframe;
+  if (!pg.GetHeadKeyframe(head_keyframe)) {
+    return;
+  }
+  const Isometry3T* pose_src = pgh.GetKeyframePose(head_keyframe);
+  if (!pose_src) {
+    return;
+  }
+  const Vector3T& p = pose_src->translation();
+  thread_local std::vector<rerun::Position3D> poses(1);
+  poses.clear();
+  poses.emplace_back(p.x(), p.y(), p.z());
+  recording.log("world/slam_pose_graph_head", rerun::Points3D(poses).with_colors(Color(255, 0, 0)).with_radii(5.f));
+}
+#endif
+
+}  // namespace
+
 Map::Map(const camera::Rig& rig, FeatureDescriptorType descriptor_type, bool use_gpu) {
   uint32_t n_shift_only_iterations;
   uint32_t n_full_mapping_iterations;
@@ -42,7 +90,7 @@ Map::Map(const camera::Rig& rig, FeatureDescriptorType descriptor_type, bool use
   } else {
     feature_descriptor_ops_ = std::make_unique<STDescriptorOps>(n_shift_only_iterations, n_full_mapping_iterations);
   }
-  landmarks_spatial_index_ = std::make_shared<LSIGrid>(*feature_descriptor_ops_, rig, 0.25f, 0, "probes_composed");
+  landmarks_spatial_index_ = std::make_shared<LSIGrid>(*feature_descriptor_ops_, rig, 0.25f, 0);
 }
 
 bool Map::AttachDatabase(std::shared_ptr<ISlamDatabase> database, bool load_data) {
@@ -55,9 +103,8 @@ bool Map::AttachDatabase(std::shared_ptr<ISlamDatabase> database, bool load_data
   database_->GetSingleton(SlamDatabaseSingleton::SpatialIndex, [&](const BlobReader& blob_reader) {
     return landmarks_spatial_index_->FromBlob(blob_reader);
   });
-  pose_graph_.GetFromDatabase(database_.get());
-  pose_graph_hypothesis_.GetFromDatabase(database_.get());
-  return true;
+
+  return pose_graph_.GetFromDatabase(database_.get()) && pose_graph_hypothesis_.GetFromDatabase(database_.get());
 }
 
 void Map::DetachDatabase(bool copy_all_from_db) {
@@ -80,10 +127,6 @@ void Map::DetachDatabase(bool copy_all_from_db) {
   database_ = nullptr;
   landmarks_spatial_index_->SetDatabase(nullptr);
 }
-
-float Map::GetCellSize() const { return landmarks_spatial_index_->GetCellSize(); }
-
-bool Map::HasKeyframes() const { return pose_graph_.GetKeyframeCount() != 0; }
 
 const PoseGraph& Map::GetPoseGraph() const { return pose_graph_; }
 const PoseGraphHypothesis& Map::GetPoseGraphHypothesis() const { return pose_graph_hypothesis_; }
@@ -112,6 +155,16 @@ std::pair<KeyFrameId, Isometry3T> Map::GetRootKeyframe() const {
     return error;
   }
   return std::pair(min_keyframe_id, *pose);
+}
+
+void Map::logPoseGraph() const {
+#ifdef USE_RERUN
+  auto& visualizer = visualizer::RerunVisualizer::getInstance();
+  auto& recording = visualizer.getRecordingStream();
+
+  LogPoseGraphNodes(recording, pose_graph_, pose_graph_hypothesis_);
+  LogPoseGraphHead(recording, pose_graph_, pose_graph_hypothesis_);
+#endif
 }
 
 }  // namespace cuvslam::slam

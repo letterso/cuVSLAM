@@ -144,7 +144,7 @@ void SolverSfMRGBD::exportTracks(const std::vector<camera::Observation>& observa
 
   // export 2d tracks
   for (const camera::Observation& obs : observations) {
-    const ICameraModel& camera = *rig_.intrinsics[obs.cam_id];
+    const camera::ICameraModel& camera = *rig_.intrinsics[obs.cam_id];
     Vector2T uv;  // in pixels
     if (camera.denormalizePoint(obs.xy, uv)) {
       out_tracks2d.push_back({obs.cam_id, obs.id, uv});

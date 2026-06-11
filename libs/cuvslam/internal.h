@@ -65,31 +65,6 @@ inline Pose ConvertIsometryToPose(const Isometry3T& isometry) {
   return pose;
 }
 
-// TODO(vikuznetsov): redesign CreateCameraModel instead?
-inline std::string ToString(Distortion::Model model) {
-  switch (model) {
-    case Distortion::Model::Polynomial:
-      return "polynomial";
-    case Distortion::Model::Brown:
-      return "brown5k";
-    case Distortion::Model::Pinhole:
-      return "pinhole";
-    case Distortion::Model::Fisheye:
-      return "fisheye4";
-  }
-  // TODO(C++23): replace with to_underlying
-  throw std::invalid_argument{"Incorrect distortion model: " +
-                              std::to_string(static_cast<std::underlying_type_t<Distortion::Model>>(model))};
-}
-
-inline Distortion::Model StringToDistortionModel(std::string_view str) {
-  if (str == "polynomial") return Distortion::Model::Polynomial;
-  if (str == "brown5k") return Distortion::Model::Brown;
-  if (str == "pinhole") return Distortion::Model::Pinhole;
-  if (str == "fisheye4" || str == "fisheye") return Distortion::Model::Fisheye;
-  throw std::invalid_argument{"Incorrect distortion model: " + std::string{str}};
-}
-
 // TODO(C++23): replace with std::to_underlying
 template <typename T, std::enable_if_t<std::is_enum_v<T>, bool> = true>
 constexpr std::underlying_type_t<T> ToUnderlying(T val) {

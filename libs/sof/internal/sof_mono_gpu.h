@@ -50,18 +50,16 @@ public:
              FeaturePredictorPtr feature_predictor, const Settings& sof_settings);
 
   void track(const ImageAndSource& curr_image, const ImageContextPtr& prev_image,
-             const Isometry3T& predicted_world_from_rig, const ImageSource* mask_source) final;
+             const Isometry3T& predicted_world_from_rig, const Settings& sof_settings,
+             const ImageSource* mask_source = nullptr) final;
 
-  const TracksVector& finish(FrameState& state) final;
+  const TracksVector& finish(FrameState& state, const Settings& sof_settings) final;
 
   void reset() final;
 
 private:
   const size_t max_points_to_track = 1e4;
   const camera::ICameraModel& intrinsics_;
-
-  // external parameters
-  Settings sof_settings_;
 
   TracksVector last_keyframe_tracks_;  // last keyframe tracks
   std::vector<Vector2T> alive_tracks_;
@@ -86,7 +84,8 @@ private:
 
   void collect();
 
-  void addFeatures(const ImageContextPtr& image, TracksVector& existing_tracks, std::vector<Vector2T>& new_tracks);
+  void addFeatures(const ImageContextPtr& image, TracksVector& existing_tracks, std::vector<Vector2T>& new_tracks,
+                   const Settings& sof_settings);
   void collapseTracks(ImageContextPtr image, TracksVector& tracks);
   static void ransacFilter(const camera::ICameraModel& intrinsics, const TracksVector& last_keyframe_tracks,
                            TracksVector& tracks);

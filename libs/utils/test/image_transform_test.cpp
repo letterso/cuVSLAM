@@ -18,7 +18,7 @@
 #include "utils/image_transform.h"
 #include "common/include_gtest.h"
 
-namespace test::utils {
+namespace test {
 
 using namespace cuvslam;
 using namespace cuvslam::utils;
@@ -78,4 +78,4 @@ TEST_F(ImageTransformTestLinearToLog, DISABLED_LinearToLogTest) {
   }
 }
 
-}  // namespace test::utils
+}  // namespace test

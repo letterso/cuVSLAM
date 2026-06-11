@@ -26,6 +26,8 @@
 #include <vector>
 
 #include "camera_rig_edex/camera_rig_edex.h"
+#include "common/coordinate_system.h"
+#include "common/isometry.h"
 #include "common/log.h"
 #include "common/stream.h"
 #include "common/time.h"
@@ -67,8 +69,9 @@ Rig EdexRigToApiRig(const edex::EdexFile& edex_file, const camera_rig_edex::Came
     cam.size[1] = edex_cam.intrinsics.resolution.y();
     cam.principal = {edex_cam.intrinsics.principal.x(), edex_cam.intrinsics.principal.y()};
     cam.focal = {edex_cam.intrinsics.focal.x(), edex_cam.intrinsics.focal.y()};
-    vec<3>(cam.rig_from_camera.translation) = edex_cam.transform.translation();
-    Eigen::Quaternionf quat(edex_cam.transform.linear());
+    const Isometry3T cam_pose = LegacyEdexIsometryToOpenCV(edex_cam.transform);
+    vec<3>(cam.rig_from_camera.translation) = cam_pose.translation();
+    Eigen::Quaternionf quat(cam_pose.linear());
     cam.rig_from_camera.rotation = {quat.x(), quat.y(), quat.z(), quat.w()};
 
     cam.distortion.model = ToDistortionModel(edex_cam.intrinsics.distortion_model);
@@ -80,8 +83,9 @@ Rig EdexRigToApiRig(const edex::EdexFile& edex_file, const camera_rig_edex::Came
   // Also, is there a more convenient way to check if imu calibration is available?
   if (!edex_file.imu_.imu_log_path_.empty()) {
     ImuCalibration imu;
-    vec<3>(imu.rig_from_imu.translation) = edex_file.imu_.transform.translation();
-    Eigen::Quaternionf quat(edex_file.imu_.transform.linear());
+    const Isometry3T imu_pose = LegacyEdexImuExtrinsicToOpenCV(edex_file.imu_.transform);
+    vec<3>(imu.rig_from_imu.translation) = imu_pose.translation();
+    Eigen::Quaternionf quat(imu_pose.linear());
     imu.rig_from_imu.rotation = {quat.x(), quat.y(), quat.z(), quat.w()};
     imu.gyroscope_noise_density = edex_file.imu_.gyroscope_noise_density;
     imu.gyroscope_random_walk = edex_file.imu_.gyroscope_random_walk;

@@ -21,7 +21,6 @@
 #include <chrono>
 #include <fstream>
 #include <memory>
-#include <numeric>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -29,17 +28,16 @@
 #include "gflags/gflags.h"
 
 #include "common/camera_id.h"
-#include "common/coordinate_system.h"
 #include "common/image_dropper.h"
 #include "common/include_json.h"
 #include "common/isometry.h"
-#include "common/json_to_eigen.h"
 #include "common/log_types.h"
 #include "common/rerun.h"
 #include "common/vector_2t.h"
 #include "common/vector_3t.h"
 #include "edex/edex.h"
 #include "epipolar/camera_projection.h"
+#include "launcher/launch_load_and_localize.h"
 #include "launcher/visualizer.h"
 #include "odometry/ground_integrator.h"
 #include "odometry/increment_pose.h"
@@ -54,6 +52,7 @@ DEFINE_double(max_fps, 10000, "Make a delay between the next image reading from 
 
 DEFINE_int32(max_pose_graph_nodes, 300, "SLAM: limit of the node count in the pose graph");
 DEFINE_uint64(throttling_time_ms, 0, "SLAM: minimum time interval between loop closures");
+DEFINE_bool(slam_reproduce_mode, true, "slam reproduce mode: synced and nonrandom");
 DEFINE_string(slam_lcs, "two_steps_easy",
               "[loop_closure_solver] Type of the loop closure solver = {dummy, simple, simple_point, two_steps_easy}");
 DEFINE_double(slam_cell_size, 0, "SLAM: cell size of the LSI");
@@ -63,16 +62,10 @@ DEFINE_string(slam_copy_to_database, "",
               "SLAM: do copy to this database finally or on frame. See 'slam_copy_on_frame'");
 DEFINE_int32(slam_copy_on_frame, -1, "SLAM: do copy to database on this frame");
 DEFINE_bool(use_gpu, true, "Use GPU");
-DEFINE_string(slam_input_database, "", "SLAM: input database for localization");
 DEFINE_int32(start_frame, 0, "Start frame index in sequence");
 DEFINE_int32(end_frame, -1, "End frame index in sequence");
-DEFINE_int32(slam_localize_on_frame, -1, "Localize in the slam_input_database on specified frame (test)");
-DEFINE_string(slam_localize_guess_translation, "",
-              "Guess pose (translation) for localization. Format: \"[float, float, float]\"");
-DEFINE_string(slam_localizer, "simple", "Type of localizer");
-DEFINE_bool(slam_localizer_reproduce_mode, false, "localizer reproduce mode: sync and nonrandom");
-DEFINE_bool(slam_localizer_single_frame, true,
-            "true = localizer is using only first frame, false = localizer is using each keyframe");
+DEFINE_int32(slam_load_and_localize_on_frame, -1, "Load and localize in the specified frame");
+DEFINE_double(slam_load_and_localize_timestamp, -1, "Load and localize timestamp in seconds");
 DEFINE_bool(slam_planar_constraints, false, "SLAM: planar constraints");
 DEFINE_bool(enable_ground_integrator, false, "Enable postprocessing ground aligner");
 DEFINE_bool(slam_disable_pgo, false, "SLAM: disable pose graph optimization");
@@ -118,9 +111,6 @@ bool GetProcessMemoryUsage(int& rss_mb, int& cached_mb) {
 
 }  // namespace
 
-float tracks3d_deviation(const Tracks3DMap& tracks3d);
-float tracks2d_deviation(const std::vector<Track2D>& tracks2d);
-
 BaseLauncher::BaseLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings)
     : cameraRig_(cameraRig), svo_settings_(svo_settings), last_frame_start_(std::chrono::steady_clock::now()) {
   if (cameraRig_.start() != ErrorCode::S_True) {
@@ -135,7 +125,7 @@ BaseLauncher::BaseLauncher(ICameraRig& cameraRig, const odom::Settings& svo_sett
   }
 }
 
-void BaseLauncher::SetupSlam(bool reproduce_mode) {
+void BaseLauncher::SetupSlam() {
   slam::LoopClosureSolverType loop_closure_solver_type;
   if (std::string("dummy") == FLAGS_slam_lcs) {
     loop_closure_solver_type = slam::LoopClosureSolverType::kDummy;
@@ -152,7 +142,7 @@ void BaseLauncher::SetupSlam(bool reproduce_mode) {
   slam::AsyncSlamOptions options;
   options.map_cache_path = FLAGS_slam_map_cache_path;
   options.use_gpu = FLAGS_use_gpu;
-  options.reproduce_mode = reproduce_mode;
+  options.reproduce_mode = FLAGS_slam_reproduce_mode;
   options.pose_for_frame_required = true;
   options.max_pose_graph_nodes = FLAGS_max_pose_graph_nodes;
   options.pgo_options.type =
@@ -206,7 +196,7 @@ ErrorCode BaseLauncher::launch() {
   odom::GroundIntegrator ground_integrator(Isometry3T::Identity(), Isometry3T::Identity(), Isometry3T::Identity());
 
   std::random_device dev;
-  auto drop = CreatImageDropper(FLAGS_image_drop_type, std::mt19937{dev()});
+  auto drop = CreateImageDropper(ParseImageDropperType(FLAGS_image_drop_type), std::mt19937{dev()});
 
   while (true) {
     {  // fps throttling
@@ -312,7 +302,7 @@ ErrorCode BaseLauncher::launch() {
       StopwatchScope sws_track_proc(sw_track_proc_);
 
       Isometry3T delta;  // doesn't need to be initialized
-      const bool solutionFound = launch_vo(delta, pose_info);
+      const bool solutionFound = launch_vo(delta, pose_info, per_frame_settings_);
       if (!solutionFound) {
         TraceError("Failed to solveNextFrame in frame %d. Set pose delta to identity.", frameId);
         delta = Isometry3T::Identity();
@@ -353,23 +343,7 @@ ErrorCode BaseLauncher::launch() {
 
       if (async_slam_) {
         async_slam_->TrackResult(frameId, timestamp_ns, stat, slam_images, delta, nullptr);
-        async_slam_->GetSlamPose(abs_world_from_rig);
-      }
-
-      if (slam_localizer_) {
-        Isometry3T current_pose = Isometry3T::Identity();
-        async_slam_->GetSlamPose(current_pose);
-        slam::AsyncSlam::LocalizationResult localization_result;
-        if (slam_localizer_->ReceiveResult(localization_result)) {
-          if (localization_result.is_valid()) {
-            async_slam_->LocalizedInSlam(localization_result);
-          }
-          // finished
-          SlamStdout("\nFree localizer resources and resetting slam_localizer.\n");
-          slam_localizer_.reset();
-        } else {
-          slam_localizer_->AddNewRequest(async_slam_->GetVOTrackData(), slam_images, current_pose);
-        }
+        abs_world_from_rig = async_slam_->GetSlamPose();
       }
 
       if (stat.keyframe) {
@@ -408,7 +382,7 @@ ErrorCode BaseLauncher::launch() {
     }
 
     if (async_slam_) {
-      async_slam_->MainLoopStep();
+      async_slam_->ProcessInputSynchronously();
       const std::list<slam::LoopClosureStamped>& last_LCs_stamped = async_slam_->GetLastLoopClosuresStamped();
       for (const slam::LoopClosureStamped& lc_stamped : last_LCs_stamped) {
         if (loop_closure_map_.find(lc_stamped.frame_id) == loop_closure_map_.end()) {
@@ -425,42 +399,15 @@ ErrorCode BaseLauncher::launch() {
       }
     }
 
-    // tests: slam_localize_on_frame
-    if (FLAGS_slam_localize_on_frame >= 0 && FLAGS_slam_localize_on_frame == curr_meta[0].frame_number) {
-      auto slam_localizer = std::make_unique<slam::AsyncLocalizer>();
-      slam::AsyncLocalizerOptions options;
-      options.use_gpu = FLAGS_use_gpu;
-      options.reproduce_mode = FLAGS_slam_localizer_reproduce_mode;
-      options.static_frame_calculation = FLAGS_slam_localizer_single_frame;
-      slam_localizer->Init(rig, options);
-
-      if (slam_localizer->OpenDatabase(FLAGS_slam_input_database.c_str())) {
-        // guess_pose
-        Isometry3T guess_pose = Isometry3T::Identity();
-        Vector3T translation(0, 0, 0);
-        ReadEigenFromString(FLAGS_slam_localize_guess_translation, translation);
-        guess_pose.translate(translation);
-
-        Isometry3T current_pose = Isometry3T::Identity();
-        async_slam_->GetSlamPose(current_pose);
-
-        if (FLAGS_slam_localizer_reproduce_mode) {
-          // sync mode
-          SlamStdout("\nStarting synchronous localization on the map.\n");
-          slam::AsyncSlam::LocalizationResult localization_result;
-          if (slam_localizer->LocalizeSync(guess_pose, current_pose, async_slam_->GetVOTrackData(), slam_images,
-                                           localization_result)) {
-            if (localization_result.is_valid()) {
-              async_slam_->LocalizedInSlam(localization_result);
-            }
-          }
-        } else {
-          // async mode
-          SlamStdout("\nStarting asynchronous localization on the map.\n");
-          slam_localizer_ = std::move(slam_localizer);
-          slam_localizer_->StartLocalizationThread(guess_pose, current_pose);
-        }
-      }
+    const CameraId default_camera = 0;
+    if (slam_images.find(default_camera) != slam_images.end() && curr_meta.find(default_camera) != curr_meta.end() &&
+        FLAGS_slam_load_and_localize_on_frame == curr_meta.at(default_camera).frame_number) {
+      constexpr int64_t ns_from_second = 1000000000;  // 1.000.000.000
+      const int64_t load_map_timestamp_ns =
+          FLAGS_slam_load_and_localize_timestamp > 0
+              ? static_cast<int64_t>(ns_from_second * FLAGS_slam_load_and_localize_timestamp)
+              : slam_images.at(default_camera)->get_image_meta().timestamp;
+      LaunchLoadMapAndLocalize(*async_slam_, load_map_timestamp_ns, slam_images, FLAGS_use_gpu);
     }
   }
 
@@ -468,9 +415,6 @@ ErrorCode BaseLauncher::launch() {
 
   if (async_slam_) {
     async_slam_->Stop();
-  }
-  if (slam_localizer_) {
-    slam_localizer_->StopLocalizationThread();
   }
 
   if (async_slam_) {
@@ -483,7 +427,7 @@ ErrorCode BaseLauncher::launch() {
     }
   }
 
-  // Post processing
+  // Post-processing
   if (async_slam_) {
     for (auto& it : cameraSolved_) {
       Isometry3T pose;
@@ -576,7 +520,7 @@ void BaseLauncher::calcVisible2DTracksStats(float& averageVisible2DTracks, size_
     totalVisible2DTracks += nVisibleTracks;
   }
 
-  averageVisible2DTracks = tracks2D_.size() > 0 ? static_cast<float>(totalVisible2DTracks) / tracks2D_.size() : 0;
+  averageVisible2DTracks = !tracks2D_.empty() ? static_cast<float>(totalVisible2DTracks) / tracks2D_.size() : 0;
 }
 
 float BaseLauncher::calcBatchResidual() const {
@@ -780,7 +724,7 @@ bool BaseLauncher::saveResultToEdex(const std::string& outEdexName, const camera
   return f.write(outEdexName);
 }
 
-bool BaseLauncher::saveResultToComposedRTJson(const std::string& outComposedRTJsonFileName) const {
+[[maybe_unused]] bool BaseLauncher::saveResultToComposedRTJson(const std::string& outComposedRTJsonFileName) const {
   std::ofstream f(outComposedRTJsonFileName, std::ifstream::binary);
 
   if (!f.is_open()) {
@@ -816,38 +760,8 @@ void BaseLauncher::updateGTPoses(const Isometry3TVector& poses) {
   gt_poses_.clear();
   gt_poses_.reserve(poses.size());
   for (const auto& pose : poses) {
-    gt_poses_.push_back(CuvslamFromOpencv(pose));
+    gt_poses_.push_back(pose);
   }
-}
-
-float tracks3d_deviation(const Tracks3DMap& tracks3d) {
-  if (tracks3d.empty()) {
-    return 0;
-  }
-  // mean
-  auto mean_func = [&](const Vector3T& accumulator, const std::pair<TrackId, Vector3T>& it) {
-    return accumulator + it.second;
-  };
-  const Vector3T mean =
-      std::accumulate(tracks3d.begin(), tracks3d.end(), Vector3T(0, 0, 0), mean_func) / tracks3d.size();
-  // variance
-  auto variance_func = [&](float accumulator, const std::pair<TrackId, Vector3T>& it) {
-    return accumulator + (it.second - mean).squaredNorm();
-  };
-  const float dispersion = std::accumulate(tracks3d.begin(), tracks3d.end(), 0.f, variance_func) / tracks3d.size();
-  return sqrt(dispersion);
-}
-float tracks2d_deviation(const std::vector<Track2D>& tracks2d) {
-  if (tracks2d.empty()) {
-    return 0;
-  }
-  // mean
-  auto mean_func = [&](const Vector2T& accumulator, const Track2D& x) { return accumulator + x.uv; };
-  const Vector2T mean = std::accumulate(tracks2d.begin(), tracks2d.end(), Vector2T(0, 0), mean_func) / tracks2d.size();
-  // variance
-  auto variance_func = [&](float accumulator, const Track2D& x) { return accumulator + (x.uv - mean).squaredNorm(); };
-  const float dispersion = std::accumulate(tracks2d.begin(), tracks2d.end(), 0.f, variance_func) / tracks2d.size();
-  return sqrt(dispersion);
 }
 
 }  // namespace cuvslam::launcher

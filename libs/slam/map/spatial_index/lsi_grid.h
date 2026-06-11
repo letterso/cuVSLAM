@@ -66,7 +66,7 @@ class LSIGrid {
 
 public:
   LSIGrid(const IFeatureDescriptorOps& feature_descriptor_ops, const camera::Rig& rig, float cell_size = 0.25f,
-          int cell_landmarks_limit = 0, const std::string& weight_func = "probes_composed");
+          int cell_landmarks_limit = 0);
   ~LSIGrid();
 
   LSIGrid(const LSIGrid&) = delete;
@@ -74,6 +74,7 @@ public:
 
 public:
   float GetCellSize() const;
+  size_t GetMaxLandmarksInCell() const;
 
   void SetDatabase(std::shared_ptr<ISlamDatabase> database);
 
@@ -82,7 +83,7 @@ public:
   void SyncDatabaseReverse();
 
   // add landmark
-  LandmarkId AddLandmark(const FeatureDescriptor& fd, const int64_t timestamp_ns);
+  LandmarkId AddLandmark(const FeatureDescriptor& fd, int64_t timestamp_ns);
   // add landmark relation
   void AddLandmarkRelation(LandmarkId landmark_id, KeyFrameId keyframe_id,
                            const Vector3T* xyz_in_keyframe,  // can be null
@@ -92,12 +93,7 @@ public:
   void UpdateLandmarkRelation(LandmarkId landmark_id, KeyFrameId old_keyframe_id, KeyFrameId new_keyframe_id,
                               const Isometry3T& transform_old_to_new);
 
-  void UpdateLandmarkRelations(LandmarkId landmark_id,
-                               std::function<bool(KeyFrameId keyframe_id, Vector3T& xyz_rel)>& func_landmark_keyframe);
-
   void AddLandmarkProbeStatistic(LandmarkId landmark_id, LandmarkProbe landmark_probe);
-
-  float GetLandmarkQuality(LandmarkId landmark_id) const;
 
   Vector3T GetLandmarkOrStagedCoords(LandmarkId id, const PoseGraphHypothesis& pg_hypo) const;
 
@@ -112,12 +108,6 @@ public:
   // must be called after all OnUpdateKeyframePose() to update cells
   void OnUpdateKeyframePoseFinished();
 
-  // Merge landmarks
-  bool MergeLandmarks(LandmarkId landmark_id0, LandmarkId landmark_id1, LandmarkId landmark_result_id,
-                      const PoseGraphHypothesis& pose_graph_hypothesis,
-                      std::function<void(LandmarkId, KeyFrameId)>& func_add_to_keyframe,
-                      std::function<void(LandmarkId, KeyFrameId)>& func_remove_from_keyframe);
-
   // on each vo camera pose
   void MoveReadyStagedLandmarksToLSI(const Isometry3T& world_from_rig, const std::vector<CameraId>& cam_ids,
                                      const PoseGraphHypothesis& pose_graph_hypothesis, KeyFrameId pose_graph_head,
@@ -126,16 +116,6 @@ public:
   // Remove landmarks
   void RemoveLandmarks(const std::vector<LandmarkId>& landmarks_to_remove,
                        std::function<void(LandmarkId, KeyFrameId)>& func_remove_from_keyframe);
-
-public:
-  // methods for merge spatial indexes:
-  // 1. Create remap index
-  bool CreateLandmarkIdRemap(const LSIGrid* const_spatial_index, std::map<LandmarkId, LandmarkId>& landmark_id_remap);
-  // 2. Reindex
-  bool Reindex(const std::map<KeyFrameId, KeyFrameId>& keyframe_id_remap,
-               const std::map<LandmarkId, LandmarkId>& landmark_id_remap);
-  // 3. Union
-  bool Union(const LSIGrid* const_spatial_index, const PoseGraphHypothesis& pose_graph_hypothesis);
 
 public:
   bool ToBlob(BlobWriter& blob) const;
@@ -148,7 +128,7 @@ public:
   // query all landmarks
   // example: lsi.Query([&](LandmarkId id) {return true;}
   // if lambda return false -> stop query else continue
-  // return false if error (database) is accured.
+  // return false if database error occurs.
   template <typename FUNC>
   bool Query(FUNC&& lambda) const {
     const std::function<bool(LandmarkId)> func(lambda);
@@ -181,7 +161,7 @@ public:
 
   // rebuild all grid
   void RebuildAllGridCells(const PoseGraphHypothesis& pose_graph_hypothesis);
-  size_t ReduceLandmarks(const std::string& weight_func);
+  size_t ReduceLandmarks();
   size_t RemoveDeadLandmarks(std::function<void(LandmarkId, KeyFrameId)>& func_remove_from_keyframe);
 
 protected:
@@ -214,7 +194,6 @@ protected:
   // stopwatches
   mutable Stopwatch sw_read_landmark_;
   mutable Stopwatch sw_read_descriptor_;
-  mutable Stopwatch sw_read_cell_;
 
 protected:
   using LandmarkQualityFunc = std::function<float(const GridLandmark& landmark)>;
@@ -236,9 +215,6 @@ protected:
   // Return exists cell
   Cell* GetExistsCellForWrite(const HashCellId& hash_cell_id);
 
-  // remove all cells
-  void RemoveAllGridCells();
-
 protected:
   void GetKeyframeCells(const GridLandmark& landmark,
                         KeyFrameId keyframe_id,  // ==InvalidKeyFrameId
@@ -247,8 +223,7 @@ protected:
   void LandmarkToBlob(const GridLandmark& landmark, BlobWriter& blob_writer) const;
   bool LandmarkFromBlob(const BlobReader& blob, GridLandmark& landmark) const;
 
-  // landmark quality function by name
-  static LandmarkQualityFunc GetLandmarkQualityFunc(const std::string& weight_func);
+  static LandmarkQualityFunc MakeLandmarkQualityFunc();
 
   size_t ReduceLandmarksInCell(HashCellId hash_cell_id, LandmarkQualityFunc& func, size_t max_landmarks_in_cell);
 

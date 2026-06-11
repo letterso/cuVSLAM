@@ -386,9 +386,8 @@ void constraint_solve(float lambda, const std::vector<ConstrainedSystem>& system
   steps.clear();
   steps.reserve(systems.size());
 
-  Matrix3T aug_h;
   for (size_t i = 0; i < systems.size(); i++) {
-    aug_h = systems[i].H + lambda * Matrix3T::Identity();
+    Matrix3T aug_h = systems[i].H + lambda * Matrix3T::Identity();
 
     // std::cout << "aug_h = " << std::endl << aug_h << std::endl;
     // std::cout << "rhs = " << std::endl << systems[i].rhs << std::endl;
@@ -400,6 +399,12 @@ void constraint_solve(float lambda, const std::vector<ConstrainedSystem>& system
 
     steps.push_back(std::move(step));
   }
+}
+
+void PGOInput::clear() {
+  deltas.clear();
+  poses.clear();
+  constrained_pose_ids.clear();
 }
 
 // Precondition: inputs.poses.size() > inputs.constrained_pose_ids.size())

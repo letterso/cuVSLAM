@@ -41,14 +41,13 @@ struct Map {
   bool AttachDatabase(std::shared_ptr<ISlamDatabase> database, bool load_data);
   void DetachDatabase(bool copy_all_from_db);
 
-  float GetCellSize() const;
-  bool HasKeyframes() const;
-
   const PoseGraph& GetPoseGraph() const;
   const PoseGraphHypothesis& GetPoseGraphHypothesis() const;
   std::shared_ptr<const LSIGrid> GetLandmarksSpatialIndex() const;
 
   static Matrix6T GetHardEdgeDefaultCovariance();
+
+  void logPoseGraph() const;
 
   std::pair<KeyFrameId, Isometry3T> GetRootKeyframe() const;
 };

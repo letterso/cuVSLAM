@@ -28,10 +28,8 @@ const size_t FAILED_ACTIVE_TRACK_COUNT = 20;
 const float RANSAC_ACCURACY_THRESHOLD = 0.002f;
 
 MonoSOFGPU::MonoSOFGPU(CameraId cam_id, const camera::ICameraModel &intrinsics, std::unique_ptr<ISelector> selector,
-                       FeaturePredictorPtr feature_predictor, const Settings &sof_settings)
-    : MonoSOFBase(cam_id, std::move(selector), feature_predictor),
-      intrinsics_(intrinsics),
-      sof_settings_(sof_settings) {}
+                       FeaturePredictorPtr feature_predictor, [[maybe_unused]] const Settings &sof_settings)
+    : MonoSOFBase(cam_id, std::move(selector), feature_predictor), intrinsics_(intrinsics) {}
 
 void MonoSOFGPU::launch(ImageContextPtr curr_image, const ImageContextPtr &prev_image,
                         const Isometry3T &predicted_world_from_rig) {
@@ -106,14 +104,19 @@ void MonoSOFGPU::collect() {
 }
 
 void MonoSOFGPU::track(const ImageAndSource &curr_image, const ImageContextPtr &prev_image,
-                       const Isometry3T &predicted_world_from_rig, const ImageSource *mask_src) {
+                       const Isometry3T &predicted_world_from_rig, const Settings &sof_settings,
+                       const ImageSource *mask_src) {
   TRACE_EVENT ev = profiler_domain_.trace_event("track", profiler_color_);
   was_launched = false;
 
   assert(curr_image.source.type == ImageSource::U8);
 
-  curr_image.image->build_gpu_image_pyramid(curr_image.source, sof_settings_.box3_prefilter, stream.get_stream());
+  curr_image.image->build_gpu_image_pyramid(curr_image.source, sof_settings.box3_prefilter, stream.get_stream());
   curr_image.image->build_gpu_gradient_pyramid(false, stream.get_stream());
+  // Sync after pyramid build to ensure GPU memory is visible to other streams.
+  // Required on Blackwell (sm_121) where cross-stream memory visibility is not
+  // guaranteed without explicit synchronization.
+  cudaStreamSynchronize(stream.get_stream());
 
   curr_img_ = curr_image.image;
 
@@ -136,7 +139,7 @@ void MonoSOFGPU::track(const ImageAndSource &curr_image, const ImageContextPtr &
   }
 }
 
-const TracksVector &MonoSOFGPU::finish(FrameState &state) {
+const TracksVector &MonoSOFGPU::finish(FrameState &state, const Settings &sof_settings) {
   TRACE_EVENT ev = profiler_domain_.trace_event("finish", profiler_color_);
 
   // can kill tracks
@@ -147,14 +150,14 @@ const TracksVector &MonoSOFGPU::finish(FrameState &state) {
     // can kill tracks
     filterByPredictionError();
 
-    if (sof_settings_.ransac_filter) {
+    if (sof_settings.ransac_filter) {
       // can kill tracks
       ransacFilter(intrinsics_, last_keyframe_tracks_, tracks_);
     }
 
     // can kill tracks
-    KillTracksOnBorder(shape_.width, shape_.height, sof_settings_.border_top, sof_settings_.border_bottom,
-                       sof_settings_.border_left, sof_settings_.border_right, tracks_);
+    KillTracksOnBorder(shape_.width, shape_.height, sof_settings.border_top, sof_settings.border_bottom,
+                       sof_settings.border_left, sof_settings.border_right, tracks_);
 
     // can kill tracks
     KillTracksWithinMask();
@@ -175,7 +178,7 @@ const TracksVector &MonoSOFGPU::finish(FrameState &state) {
   if (feature_selector_->select(tracks_)) {
     state = FrameState::Key;
     std::vector<Vector2T> new_tracks;
-    addFeatures(curr_img_, tracks_, new_tracks);
+    addFeatures(curr_img_, tracks_, new_tracks, sof_settings);
 
     tracks_.add(cam_id_, new_tracks);
 
@@ -212,12 +215,12 @@ void MonoSOFGPU::reset() {
 }
 
 void MonoSOFGPU::addFeatures(const ImageContextPtr &image, TracksVector &existing_tracks,
-                             std::vector<Vector2T> &new_tracks) {
+                             std::vector<Vector2T> &new_tracks, const Settings &sof_settings) {
   TRACE_EVENT ev1 = profiler_domain_.trace_event("MonoSOFGPU::addFeatures", profiler_color_);
   const size_t num_alive_tracks = existing_tracks.get_num_alive();
-  assert(num_alive_tracks <= static_cast<size_t>(sof_settings_.num_desired_tracks) &&
+  assert(num_alive_tracks <= static_cast<size_t>(sof_settings.num_desired_tracks) &&
          num_alive_tracks <= existing_tracks.size());
-  const size_t nDesiredPointsToSelect = sof_settings_.num_desired_tracks - num_alive_tracks;
+  const size_t nDesiredPointsToSelect = sof_settings.num_desired_tracks - num_alive_tracks;
 
   alive_tracks_.clear();
   alive_tracks_.reserve(num_alive_tracks);
@@ -230,8 +233,8 @@ void MonoSOFGPU::addFeatures(const ImageContextPtr &image, TracksVector &existin
 
   const GPUGradientPyramid &grads = image->gpu_gradient_pyramid();
 
-  detector_.computeGFTTAndSelectFeatures(grads, sof_settings_.border_top, sof_settings_.border_bottom,
-                                         sof_settings_.border_left, sof_settings_.border_right,
+  detector_.computeGFTTAndSelectFeatures(grads, sof_settings.border_top, sof_settings.border_bottom,
+                                         sof_settings.border_left, sof_settings.border_right,
                                          input_mask_present_ ? &input_mask_ : nullptr, alive_tracks_,
                                          nDesiredPointsToSelect, new_tracks, stream.get_stream());
 }

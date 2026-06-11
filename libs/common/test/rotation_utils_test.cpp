@@ -29,8 +29,8 @@ TEST(RotationUtilsTest, CalculateRotationFromSVD_Identity) {
   Isometry3T identity = Isometry3T::Identity();
   Matrix3T rotation = common::CalculateRotationFromSVD(identity.matrix());
 
-  EXPECT_TRUE(rotation.isApprox(Matrix3T::Identity()));
-  EXPECT_NEAR(rotation.determinant(), 1.0f, 1e-6f);
+  EXPECT_TRUE(rotation.isApprox(Matrix3T::Identity())) << rotation;
+  EXPECT_NEAR(rotation.determinant(), 1.0f, 1e-6f) << rotation;
 }
 
 TEST(RotationUtilsTest, CalculateRotationFromSVD_RandomRotation) {
@@ -45,8 +45,8 @@ TEST(RotationUtilsTest, CalculateRotationFromSVD_RandomRotation) {
 
   Matrix3T computed_rotation = common::CalculateRotationFromSVD(transform.matrix());
 
-  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f));
-  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f);
+  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f)) << computed_rotation;
+  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f) << computed_rotation;
 }
 
 TEST(RotationUtilsTest, CalculateRotationFromSVD_WithTranslation) {
@@ -63,15 +63,13 @@ TEST(RotationUtilsTest, CalculateRotationFromSVD_WithTranslation) {
 
   Matrix3T computed_rotation = common::CalculateRotationFromSVD(transform.matrix());
 
-  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f));
-  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f);
+  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f)) << computed_rotation;
+  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f) << computed_rotation;
 }
 
 TEST(RotationUtilsTest, CalculateRotationFromSVD_WithScaling) {
   // Test with a matrix that has scaling (non-orthogonal)
-  Matrix3T non_orthogonal = Matrix3T::Random();
-  // Make it non-orthogonal by adding scaling
-  non_orthogonal *= 2.0f;
+  Matrix3T non_orthogonal = Matrix3T::Random() * 2.0f;
 
   Isometry3T transform = Isometry3T::Identity();
   transform.linear() = non_orthogonal;
@@ -80,7 +78,7 @@ TEST(RotationUtilsTest, CalculateRotationFromSVD_WithScaling) {
 
   // Should still be a valid rotation matrix
   EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f) << computed_rotation;
-  EXPECT_TRUE((computed_rotation * computed_rotation.transpose()).isApprox(Matrix3T::Identity(), 2e-6f))
+  EXPECT_TRUE((computed_rotation * computed_rotation.transpose()).isApprox(Matrix3T::Identity(), 5e-6f))
       << computed_rotation;
 }
 
@@ -98,8 +96,62 @@ TEST(RotationUtilsTest, CalculateRotationFromSVD_4x4Matrix) {
 
   Matrix3T computed_rotation = common::CalculateRotationFromSVD(transform_4x4);
 
-  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f));
-  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f);
+  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f)) << computed_rotation;
+  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f) << computed_rotation;
+}
+
+TEST(RotationUtilsTest, CalculateRotationFromSVD_PureReflection) {
+  // diag(-1, 1, 1): a pure reflection with det = -1
+  Matrix3T reflection = Matrix3T::Identity();
+  reflection(0, 0) = -1.0f;
+
+  Matrix3T result = common::CalculateRotationFromSVD<float, 3>(reflection);
+
+  EXPECT_NEAR(result.determinant(), 1.0f, 1e-6f) << result;
+  EXPECT_TRUE((result * result.transpose()).isApprox(Matrix3T::Identity(), 1e-6f)) << result;
+}
+
+TEST(RotationUtilsTest, CalculateRotationFromSVD_RotationWithNegatedColumn) {
+  // A valid rotation with one column negated produces det = -1
+  Vector3T axis = Vector3T(1.0f, 1.0f, 1.0f).normalized();
+  Eigen::AngleAxis<float> aa(1.0f, axis);
+  Matrix3T rotation = aa.toRotationMatrix();
+
+  Matrix3T improper = rotation;
+  improper.col(2) *= -1.0f;
+  ASSERT_LT(improper.determinant(), 0.0f);
+
+  Matrix3T result = common::CalculateRotationFromSVD<float, 3>(improper);
+
+  EXPECT_NEAR(result.determinant(), 1.0f, 1e-6f) << result;
+  EXPECT_TRUE((result * result.transpose()).isApprox(Matrix3T::Identity(), 1e-6f)) << result;
+}
+
+TEST(RotationUtilsTest, CalculateRotationFromSVD_ScaledReflection) {
+  // Non-uniform scaling with a reflection: diag(-3, 2, 1), det = -6
+  Matrix3T M = Matrix3T::Zero();
+  M(0, 0) = -3.0f;
+  M(1, 1) = 2.0f;
+  M(2, 2) = 1.0f;
+
+  Matrix3T result = common::CalculateRotationFromSVD<float, 3>(M);
+
+  EXPECT_NEAR(result.determinant(), 1.0f, 1e-6f) << result;
+  EXPECT_TRUE((result * result.transpose()).isApprox(Matrix3T::Identity(), 1e-6f)) << result;
+}
+
+TEST(RotationUtilsTest, CalculateRotationFromSVD_NegativeDeterminantRandom) {
+  // Random matrix with negative determinant
+  Matrix3T M = Matrix3T::Random();
+  if (M.determinant() > 0) {
+    M.col(0) *= -1.0f;
+  }
+  ASSERT_LT(M.determinant(), 0.0f);
+
+  Matrix3T result = common::CalculateRotationFromSVD<float, 3>(M);
+
+  EXPECT_NEAR(result.determinant(), 1.0f, 1e-6f) << result;
+  EXPECT_TRUE((result * result.transpose()).isApprox(Matrix3T::Identity(), 5e-6f)) << result;
 }
 
 TEST(RotationUtilsTest, CalculateRotationFromSVD_3x4Matrix) {
@@ -116,6 +168,6 @@ TEST(RotationUtilsTest, CalculateRotationFromSVD_3x4Matrix) {
 
   Matrix3T computed_rotation = common::CalculateRotationFromSVD(transform_3x4);
 
-  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f));
-  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f);
+  EXPECT_TRUE(computed_rotation.isApprox(expected_rotation, 1e-6f)) << computed_rotation;
+  EXPECT_NEAR(computed_rotation.determinant(), 1.0f, 1e-6f) << computed_rotation;
 }

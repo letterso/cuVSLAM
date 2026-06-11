@@ -35,6 +35,7 @@ class Tracker:
     MulticameraMode = Odometry.MulticameraMode
     OdometryConfig = Odometry.Config
     OdometryRGBDSettings = Odometry.RGBDSettings
+    TrackOptions = Odometry.TrackOptions
 
     SlamConfig = Slam.Config
     SlamMetrics = Slam.Metrics
@@ -45,8 +46,6 @@ class Tracker:
     PoseGraph = Slam.PoseGraph
     SlamLandmark = Slam.Landmark
     SlamLandmarks = Slam.Landmarks
-    LocalizerProbe = Slam.LocalizerProbe
-    LocalizerProbes = Slam.LocalizerProbes
 
     def __init__(self,
                  rig: Rig,
@@ -77,8 +76,9 @@ class Tracker:
               images: List[ImageArray],
               masks: Optional[List[ImageArray]] = None,
               depths: Optional[List[ImageArray]] = None,
-              gt_pose: Optional[Pose] = None) -> Tuple[PoseEstimate,
-                                                       Optional[Pose]]:
+              gt_pose: Optional[Pose] = None,
+              options: Optional[Odometry.TrackOptions] = None) -> Tuple[PoseEstimate,
+                                                                        Optional[Pose]]:
         """
         Track a rig pose using current image frame.
 
@@ -109,6 +109,7 @@ class Tracker:
             masks: Optional list of numpy arrays or tensors containing masks for the images
             depths: Optional list of numpy arrays or tensors containing depth images
             gt_pose: Optional ground truth pose. Should be provided if `gt_align_mode` is enabled, otherwise should be None.
+            options: Optional per-frame options that override default settings for this call only.
 
         Returns:
             PoseEstimate: The computed pose estimate from Odometry. On failure `world_from_rig` will be `None`.
@@ -117,7 +118,7 @@ class Tracker:
         Raises:
             ValueError: If data checks fail (e.g. timestamps are out of order, images sizes are inconsistent, etc.).
         """
-        pose_estimate = self.odom.track(timestamp, images, masks, depths)
+        pose_estimate = self.odom.track(timestamp, images, masks, depths, options)
 
         slam_pose = None
         if self.slam and pose_estimate.world_from_rig:
@@ -175,7 +176,8 @@ class Tracker:
 
     def get_last_gravity(self) -> Optional[list[float]]:
         """
-        Get gravity vector from the last frame.
+        Get gravity acceleration (m/s²) in the rig / VO frame; +Y is down (OpenCV), so the vector is
+        approximately ``[0, +g, 0]`` when the rig is upright.
         Returns `None` if gravity is not yet available.
         Requires Inertial mode (`odometry_mode=OdometryMode.Inertial` in :class:`OdometryConfig`)
         """
@@ -204,15 +206,6 @@ class Tracker:
         """
         return self.slam.get_all_slam_poses(max_poses_count) if self.slam else []
 
-    def set_slam_pose(self, pose: Pose) -> None:
-        """
-        Set the rig SLAM pose to a value provided by a user.
-        This is useful for initializing SLAM (or resetting in the process) with a pose known from another source.
-        Subsequent calls to `track` will use this pose as the starting point for SLAM.
-        """
-        if self.slam:
-            self.slam.set_slam_pose(pose)
-
     def save_map(self, folder_name: str, callback: Callable[[bool], None]) -> None:
         """
         Save SLAM database (map) to a folder asynchronously.
@@ -232,10 +225,12 @@ class Tracker:
 
     def localize_in_map(self,
                         folder_name: str,
+                        timestamp: int,
                         guess_pose: Pose,
                         images: List[ImageArray],
                         settings: Slam.LocalizationSettings,
-                        callback: Callable[[Optional[Pose], str], None]) -> None:
+                        start_cb: Callable[[], None],
+                        finish_cb: Callable[[Optional[Pose], str], None]) -> None:
         """
         Localize in the existing database (map) asynchronously.
 
@@ -246,15 +241,20 @@ class Tracker:
 
         Parameters:
             folder_name: Folder name which stores saved SLAM database
+            timestamp: Time in nanoseconds for the localized pose
             guess_pose: Proposed pose where the robot might be
             images: List of numpy arrays or tensors containing the camera images
             settings: Localization settings
-            callback: Function to be called when localization is complete (takes <Pose | None> result and error message parameters)
+            start_cb: Function to be called when localization is started
+            finish_cb: Function to be called when localization is complete (takes <Pose | None>
+                       result and error message parameters)
+        Raises:
+            ValueError: If SLAM is not enabled.
         """
-        if self.slam:
-            self.slam.localize_in_map(folder_name, guess_pose, images, settings, callback)
-        else:
-            callback(None, "SLAM is not enabled; cannot localize in map.")
+        if not self.slam:
+            raise ValueError("SLAM is not enabled.")
+
+        self.slam.localize_in_map(folder_name, timestamp, guess_pose, images, settings, start_cb, finish_cb)
 
     def get_slam_landmarks(self, layer: SlamDataLayer) -> Optional[SlamLandmarks]:
         """Get landmarks for a given data layer of SLAM. See :class:`SlamLandmarks`, :class:`SlamDataLayer`."""
@@ -264,10 +264,6 @@ class Tracker:
         """Get pose graph consisting of all keyframes and their connections including loop closures. See :class:`PoseGraph`."""
         return self.slam.get_pose_graph() if self.slam else None
 
-    def get_localizer_probes(self) -> Optional[LocalizerProbes]:
-        """Get localizer probes from the most recent localization attempt. See :class:`LocalizerProbes`."""
-        return self.slam.get_localizer_probes() if self.slam else None
-
     def get_slam_metrics(self) -> Optional[SlamMetrics]:
         """Get SLAM metrics. See :class:`SlamMetrics`"""
         return self.slam.get_slam_metrics() if self.slam else None
@@ -275,23 +271,3 @@ class Tracker:
     def get_loop_closure_poses(self) -> Optional[List[PoseStamped]]:
         """Get list of last 10 loop closure poses with timestamps."""
         return self.slam.get_loop_closure_poses() if self.slam else None
-
-    @staticmethod
-    def merge_maps(rig: Rig, databases: List[str], output_folder: str) -> None:
-        """
-        Merge existing maps into one map.
-
-        Don't use any of the input folders as `output_folder` to avoid overwriting.
-
-        This method merges multiple maps into a single map. Maps must have the same world coordinate frame,
-        e.g. using `set_slam_pose` from a ground truth source.
-
-        This method cannot be used to merge maps from different locations,
-        because pose graphs from input maps must be combined into a single graph.
-
-        Parameters:
-            rig: Camera rig configuration
-            databases: Input array of folders with existing databases
-            output_folder: folder to save output database
-        """
-        Slam.merge_maps(rig, databases, output_folder)

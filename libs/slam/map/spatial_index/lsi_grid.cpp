@@ -36,8 +36,8 @@ bool IsLandmarkInFrustum(const camera::ICameraModel& intrinsics, const Isometry3
                          const Vector3T& landmark_xyz) {
   const Vector3T point = cam_from_world * landmark_xyz;
 
-  // points_behind
-  if (point.z() >= 0.f) {
+  // Behind camera or too close for stable projection (+Z forward, OpenCV).
+  if (point.z() <= 0.f) {
     return false;
   }
 
@@ -105,16 +105,17 @@ void LSIGrid::Cell::Remove(LandmarkId landmark_id) {
 }
 
 LSIGrid::LSIGrid(const IFeatureDescriptorOps& feature_descriptor_ops, const camera::Rig& rig, float cell_size,
-                 int cell_landmarks_limit, const std::string& weight_func)
+                 int cell_landmarks_limit)
     : feature_descriptor_ops_(feature_descriptor_ops),
       rig_(rig),
       cell_size_(cell_size),
       cell_landmarks_limit_(cell_landmarks_limit),
-      landmark_quality_func_(GetLandmarkQualityFunc(weight_func)) {}
+      landmark_quality_func_(MakeLandmarkQualityFunc()) {}
 
-LSIGrid::~LSIGrid() {}
+LSIGrid::~LSIGrid() = default;
 
 float LSIGrid::GetCellSize() const { return cell_size_; }
+size_t LSIGrid::GetMaxLandmarksInCell() const { return cell_landmarks_limit_; }
 
 void LSIGrid::SetDatabase(std::shared_ptr<ISlamDatabase> database) { this->database_ = database; }
 
@@ -249,7 +250,7 @@ void LSIGrid::SyncDatabaseReverse() {
 }
 
 // add or update landmark
-LandmarkId LSIGrid::AddLandmark(const FeatureDescriptor& fd, const int64_t timestamp_ns) {
+LandmarkId LSIGrid::AddLandmark(const FeatureDescriptor& fd, int64_t timestamp_ns) {
   if (!fd) {
     return InvalidLandmarkId;
   }
@@ -290,26 +291,6 @@ void LSIGrid::AddLandmarkRelation(LandmarkId landmark_id, KeyFrameId keyframe_id
     this->GetKeyframeCells(landmark, kp.keyframe_id, hash_cell_ids, pose_graph_hypothesis);
     for (auto hash_cell_id : hash_cell_ids) {
       this->AddLandmarkToCell(landmark_id, hash_cell_id);
-    }
-  }
-}
-
-void LSIGrid::UpdateLandmarkRelations(
-    LandmarkId landmark_id, std::function<bool(KeyFrameId keyframe_id, Vector3T& xyz_rel)>& func_landmark_keyframe) {
-  auto landmark_ptr = GetLandmarkOrStaged(landmark_id);
-  if (!landmark_ptr) {
-    return;
-  }
-  auto& landmark = *landmark_ptr;
-
-  for (auto& kf : landmark.keyframes) {
-    if (!kf.has_xyz) {
-      continue;
-    }
-    Vector3T xyz_rel = kf.xyz_in_keyframe;
-    bool has_new_xyz_rel = func_landmark_keyframe(kf.keyframe_id, xyz_rel);
-    if (has_new_xyz_rel) {
-      kf.xyz_in_keyframe = xyz_rel;
     }
   }
 }
@@ -396,87 +377,6 @@ void LSIGrid::AddLandmarkProbeStatistic(LandmarkId landmark_id, LandmarkProbe la
 
   landmark_ptr->probes_types[landmark_probe]++;
 };
-
-float LSIGrid::GetLandmarkQuality(LandmarkId landmark_id) const {
-  auto landmark_ptr = GetLandmark(landmark_id);
-  if (!landmark_ptr) {
-    return 0;
-  }
-
-  float quality = landmark_quality_func_(*landmark_ptr);
-  return quality;
-}
-
-// Merge landmarks
-bool LSIGrid::MergeLandmarks(LandmarkId landmark_id0, LandmarkId landmark_id1, LandmarkId landmark_result_id,
-                             const PoseGraphHypothesis& pose_graph_hypothesis,
-                             std::function<void(LandmarkId, KeyFrameId)>& func_add_to_keyframe,
-                             std::function<void(LandmarkId, KeyFrameId)>& func_remove_from_keyframe) {
-  TRACE_EVENT ev = profiler_domain_.trace_event("MergeLandmarks()", profiler_color_);
-
-  auto landmark0_ptr = GetLandmark(landmark_id0);
-  auto landmark1_ptr = GetLandmark(landmark_id1);
-  if (!landmark0_ptr || !landmark1_ptr) {
-    return false;
-  }
-  auto& landmark0 = *landmark0_ptr;
-  auto& landmark1 = *landmark1_ptr;
-
-  Vector3T landmark0_xyz =
-      landmark0.xyz_world([&](KeyFrameId kf) { return pose_graph_hypothesis.GetKeyframePose(kf); });
-  Vector3T landmark1_xyz =
-      landmark1.xyz_world([&](KeyFrameId kf) { return pose_graph_hypothesis.GetKeyframePose(kf); });
-  Vector3T landmark_xyz = (landmark0_xyz + landmark1_xyz) * 0.5f;
-
-  GridLandmark landmark_res;
-  // ! select descriptor from first landmark
-  // ! landmark's point in keyframe space like in first landmark
-  landmark_res.fd = landmark0.fd;
-  landmark_res.keyframes = landmark0.keyframes;
-  for (auto& linkf : landmark_res.keyframes) {
-    // update xyz_in_keyframe
-    if (linkf.has_xyz) {
-      auto* pose = pose_graph_hypothesis.GetKeyframePose(linkf.keyframe_id);
-      if (pose) {
-        Isometry3T pose_inv = pose->inverse();
-        linkf.xyz_in_keyframe = pose_inv * landmark_xyz;
-      }
-    }
-
-    // update uv_norm_in_keyframe
-    auto* linkf1 = landmark1.GetLandmarkInKeyframe(linkf.keyframe_id);
-    if (linkf1) {
-      linkf.uv_norm_in_keyframe = (linkf.uv_norm_in_keyframe + linkf1->uv_norm_in_keyframe) * 0.5f;
-    }
-  }
-  // add missed keyframes from 1
-  for (auto& linkf1 : landmark1.keyframes) {
-    auto* linkf0 = landmark_res.GetLandmarkInKeyframe(linkf1.keyframe_id);
-    if (!linkf0) {
-      LandmarkInKeyframe data = linkf1;
-      data.has_link = false;
-      landmark_res.AddLandmarkInKeyframe(data);
-      func_add_to_keyframe(landmark_result_id, linkf1.keyframe_id);
-    }
-  }
-  for (int i = 0; i < LP_MAX; i++) {
-    landmark_res.probes_types[i] = landmark0.probes_types[i] + landmark1.probes_types[i];
-  }
-
-  landmarks_[landmark_result_id] = landmark_res;
-
-  // remove landmarks
-  std::vector<LandmarkId> landmarks_to_remove;
-  if (landmark_result_id != landmark_id0) {
-    landmarks_to_remove.push_back(landmark_id0);
-  }
-  if (landmark_result_id != landmark_id1) {
-    landmarks_to_remove.push_back(landmark_id1);
-  }
-  RemoveLandmarks(landmarks_to_remove, func_remove_from_keyframe);
-
-  return true;
-}
 
 // on each vo camera pose
 void LSIGrid::MoveReadyStagedLandmarksToLSI(const Isometry3T& world_from_rig, const std::vector<CameraId>& cam_ids,
@@ -591,167 +491,6 @@ void LSIGrid::RemoveLandmarks(const std::vector<LandmarkId>& landmarks_to_remove
   }
 }
 
-// 1. Create remap index
-bool LSIGrid::CreateLandmarkIdRemap(const LSIGrid* spatial_index, std::map<LandmarkId, LandmarkId>& landmark_id_remap) {
-  const LSIGrid* const_spatial_index = dynamic_cast<const LSIGrid*>(spatial_index);
-  if (!const_spatial_index) {
-    return false;
-  }
-
-  // build next_landmark_auto_id from const_spatial_index
-  LandmarkId next_landmark_auto_id = 0;
-  if (const_spatial_index->database_) {
-    const_spatial_index->database_->ForEach(SlamDatabaseTable::Landmarks,
-                                            [&](LandmarkId id, const BlobReader&) -> bool {
-                                              next_landmark_auto_id = std::max(next_landmark_auto_id, id + 1);
-                                              return true;
-                                            });
-  }
-  const_spatial_index->Query([&](LandmarkId id) {
-    next_landmark_auto_id = std::max(next_landmark_auto_id, id + 1);
-    return true;
-  });
-  // SlamStdout(" next_landmark_auto_id = %zd", next_landmark_auto_id);
-
-  // fill landmark_id_remap
-  if (database_) {
-    database_->ForEach(SlamDatabaseTable::Landmarks, [&](LandmarkId id, const BlobReader&) -> bool {
-      if (landmark_id_remap.find(id) == landmark_id_remap.end()) {
-        landmark_id_remap[id] = next_landmark_auto_id++;
-      }
-      return true;
-    });
-  }
-  Query([&](LandmarkId id) {
-    if (landmark_id_remap.find(id) == landmark_id_remap.end()) {
-      landmark_id_remap[id] = next_landmark_auto_id++;
-    }
-    return true;
-  });
-  return true;
-}
-
-// 2. Reindex
-bool LSIGrid::Reindex(const std::map<KeyFrameId, KeyFrameId>& keyframe_id_remap,
-                      const std::map<LandmarkId, LandmarkId>& landmark_id_remap) {
-  if (!dead_landmarks_.empty()) {
-    return false;
-  };
-
-  auto reindex_landmarks = [&](LandmarkId src, LandmarkId& dst) {
-    auto it_remap = landmark_id_remap.find(src);
-    if (it_remap == landmark_id_remap.end()) {
-      return false;
-    }
-    dst = it_remap->second;
-    return true;
-  };
-
-  auto reindex_keyframes = [&](std::vector<LandmarkInKeyframe>& keyframes) {
-    for (auto& link : keyframes) {
-      auto it_remap = keyframe_id_remap.find(link.keyframe_id);
-      if (it_remap == keyframe_id_remap.end()) {
-        return false;
-      }
-      link.keyframe_id = it_remap->second;
-    }
-    return true;
-  };
-
-  // staged_landmarks_
-  std::map<LandmarkId, GridLandmark> staged_landmarks;
-  for (auto& it : staged_landmarks_) {
-    LandmarkId id;
-    if (reindex_landmarks(it.first, id)) {
-      Landmark& landmark = staged_landmarks[id];
-      landmark = it.second;
-      reindex_keyframes(landmark.keyframes);
-    }
-  }
-
-  // landmarks_
-  std::map<LandmarkId, GridLandmark> landmarks;
-  for (auto& it : landmarks_) {
-    LandmarkId id;
-    if (reindex_landmarks(it.first, id)) {
-      Landmark& landmark = landmarks[id];
-      landmark = it.second;
-      reindex_keyframes(landmark.keyframes);
-    }
-  }
-  if (database_) {
-    // copy DB landmarks to memory
-    database_->ForEach(SlamDatabaseTable::Landmarks, [&](LandmarkId id, const BlobReader& blob) -> bool {
-      if (landmarks_.find(id) == landmarks_.end()) {
-        if (reindex_landmarks(id, id)) {
-          GridLandmark& landmark = landmarks[id];
-          LandmarkFromBlob(blob, landmark);
-          reindex_keyframes(landmark.keyframes);
-        }
-      }
-      return true;
-    });
-
-    // read descriptor from DB
-    database_->ForEach(SlamDatabaseTable::Descriptors, [&](LandmarkId id, const BlobReader& blob) -> bool {
-      auto it_remap = landmark_id_remap.find(id);
-      if (it_remap != landmark_id_remap.end()) {
-        id = it_remap->second;
-        auto landmark_it = landmarks.find(id);
-        if (landmark_it != landmarks.end()) {
-          auto& landmark = landmark_it->second;
-          if (!landmark.fd || landmark.have_to_get_descriptor_from_db) {
-            // read descriptor
-            auto fd = feature_descriptor_ops_.CreateFromBlob(blob);
-            landmark.have_to_get_descriptor_from_db = false;
-            landmark.fd = fd;
-          }
-        }
-      }
-      return true;
-    });
-  }
-  // clear all cells
-  RemoveAllGridCells();
-  // RebuildAllGridCells()
-
-  // copy
-  staged_landmarks_ = staged_landmarks;
-  landmarks_ = landmarks;
-  return true;
-}
-
-// 3. Union
-bool LSIGrid::Union(const LSIGrid* spatial_index, const PoseGraphHypothesis& pose_graph_hypothesis) {
-  const LSIGrid* const_spatial_index = dynamic_cast<const LSIGrid*>(spatial_index);
-  if (!const_spatial_index) {
-    return false;
-  }
-  int count = 0;
-  // copy all landmarks
-  const_spatial_index->Query([&](LandmarkId id) -> bool {
-    const GridLandmark* src_landmark = const_spatial_index->GetLandmarkOrStaged(id);
-    if (landmarks_.find(id) != landmarks_.end()) {
-      SlamStderr("Failed to add landmark %zd to LSI grid.\n", id);
-    }
-
-    auto& landmark = landmarks_[id];
-    landmark = *src_landmark;
-    auto fd = const_spatial_index->GetLandmarkFeatureDescriptor(id);
-
-    // read descriptor
-    landmark.fd = feature_descriptor_ops_.Copy(fd);
-    landmark.have_to_get_descriptor_from_db = false;
-    count++;
-    return true;
-  });
-  // SlamStdout(" copy %d landmarks ", count);
-
-  // rebuild all cells
-  RebuildAllGridCells(pose_graph_hypothesis);
-  return true;
-}
-
 Vector3T LSIGrid::GetLandmarkOrStagedCoords(LandmarkId landmark_id, const PoseGraphHypothesis& pg_hypo) const {
   Vector3T xyz(0, 0, 0);
   if (!GetLandmarkOrStagedCoords(landmark_id, pg_hypo, xyz)) {
@@ -842,14 +581,6 @@ uint64_t LSIGrid::LandmarksCount() const {
   }
 
   return count;
-}
-
-// remove all cells
-void LSIGrid::RemoveAllGridCells() {
-  if (database_) {
-    // TODO: ?
-  }
-  cells_.clear();
 }
 
 // rebuild all grid
@@ -959,7 +690,7 @@ size_t LSIGrid::ReduceLandmarksInCell(HashCellId hash_cell_id, LandmarkQualityFu
   return removed_count;
 }
 
-size_t LSIGrid::ReduceLandmarks(const std::string& weight_func) {
+size_t LSIGrid::ReduceLandmarks() {
   TRACE_EVENT ev = profiler_domain_.trace_event("ReduceLandmarks()", profiler_color_);
 
   if (cell_landmarks_limit_ == 0) {
@@ -967,17 +698,13 @@ size_t LSIGrid::ReduceLandmarks(const std::string& weight_func) {
   }
 
   size_t max_landmarks_in_cell = cell_landmarks_limit_;
-  LandmarkQualityFunc func = GetLandmarkQualityFunc(weight_func);
-  if (!func) {
-    return 0;
-  }
 
   // TODO: only in-memory cells will processed!
   // Don't discard cell before calling ReduceLandmarksInCell()
   size_t removed_count = 0;
   for (auto& it : cells_) {
     auto hash_cell_id = it.first;
-    removed_count += this->ReduceLandmarksInCell(hash_cell_id, func, max_landmarks_in_cell);
+    removed_count += this->ReduceLandmarksInCell(hash_cell_id, landmark_quality_func_, max_landmarks_in_cell);
   }
 
   {
@@ -1306,21 +1033,15 @@ bool LSIGrid::LandmarkFromBlob(const BlobReader& blob_reader, GridLandmark& land
   return true;
 }
 
-LSIGrid::LandmarkQualityFunc LSIGrid::GetLandmarkQualityFunc(const std::string& weight_func) {
-  if (weight_func == "probes_composed") {
-    auto func = [&](const GridLandmark& landmark) -> float {
-      float p = 0;
-      p += landmark.probes_types[LP_SOLVER_OK];
-      p += landmark.probes_types[LP_PNP_FAILED] * 0.75f;
-      p += -landmark.probes_types[LP_RANSAC_FAILED] * 0.1f;
-      p += -landmark.probes_types[LP_TRACKING_FAILED] * 0.25f;
-      return p;
-    };
-    return func;
-  } else {
-    TraceError("Wrong weight_func in LSI GRID: %s", weight_func.c_str());
-  }
-  return nullptr;
+LSIGrid::LandmarkQualityFunc LSIGrid::MakeLandmarkQualityFunc() {
+  return [](const GridLandmark& landmark) -> float {
+    float p = 0;
+    p += landmark.probes_types[LP_SOLVER_OK];
+    p += landmark.probes_types[LP_PNP_FAILED] * 0.75f;
+    p += -landmark.probes_types[LP_RANSAC_FAILED] * 0.1f;
+    p += -landmark.probes_types[LP_TRACKING_FAILED] * 0.25f;
+    return p;
+  };
 }
 
 Vector3T LSIGrid::GetLandmarkCoords(const PoseGraphHypothesis& pg_hypo, const GridLandmark& landmark) {

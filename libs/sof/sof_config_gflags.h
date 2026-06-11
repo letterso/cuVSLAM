@@ -48,9 +48,9 @@ void ParseSettings(Settings& settings) {
   settings.border_right = FLAGS_border_right;
   settings.box3_prefilter = FLAGS_box3_prefilter;
   settings.ransac_filter = FLAGS_ransac_filter;
-  settings.tracker = FLAGS_tracker;
-  settings.lr_tracker = FLAGS_lr_tracker;
-  settings.multicam_mode = ParseMulticameraMode(FLAGS_multicam_mode);
+  settings.tracker = ParseTrackerType(FLAGS_tracker);
+  settings.lr_tracker = ParseTrackerType(FLAGS_lr_tracker);
+  settings.multicam_mode = camera::ParseMulticameraMode(FLAGS_multicam_mode);
 }
 
 }  // namespace cuvslam::sof

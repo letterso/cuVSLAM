@@ -20,6 +20,7 @@ add_subdirectory(cuvslam_api_test)
 add_subdirectory(gravity_calc)
 add_subdirectory(map_extractor)
 add_subdirectory(tracker)
+add_subdirectory(euroc_test)
 
 find_package(OpenCV QUIET)
 

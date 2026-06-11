@@ -36,7 +36,7 @@ PNPSettings PNPSettings::LCSettings() {
   settings.min_observations = 3;
   settings.recalculate_cov = true;
   settings.huber = 5e-2;
-  settings.point_z_thresh = -1e-3f;
+  settings.point_z_thresh = 1e-3f;
   return settings;
 }
 
@@ -94,7 +94,7 @@ float PNPSolver::evaluate_cost(const Isometry3T& rig_from_world) const {
 
     point_cam = Tcam_from_w * point_w;
 
-    if (point_cam.z() > settings_.point_z_thresh) continue;
+    if (point_cam.z() <= settings_.point_z_thresh) continue;
 
     count++;
 
@@ -131,7 +131,7 @@ void PNPSolver::build_hessian(const Isometry3T& rig_from_world, Matrix6T& H, Vec
 
     point_cam = Tcam_from_w * point_w;
 
-    if (point_cam.z() > settings_.point_z_thresh) continue;
+    if (point_cam.z() <= settings_.point_z_thresh) continue;
     count++;
 
     float one_over_z = 1.f / point_cam.z();
@@ -301,7 +301,7 @@ bool PNPSolver::solve(Isometry3T& rig_from_world, Matrix6T& static_info_exp,
 
       point_cam = Tcam_from_w * point_w;
 
-      if (point_cam.z() > settings_.point_z_thresh) continue;
+      if (point_cam.z() <= settings_.point_z_thresh) continue;
 
       Mat26 J = projection_jacobian(point_cam) * Tcam_from_w.linear() * point_jacobian(point_w);
       static_info_exp += J.transpose() * obs.xy_info * J;

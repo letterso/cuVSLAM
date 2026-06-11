@@ -32,7 +32,6 @@
 #include "edex/edex_types.h"
 #include "odometry/multi_visual_odometry_base.h"
 #include "odometry/svo_config.h"
-#include "slam/async_localizer/async_localizer.h"
 #include "slam/async_slam/async_slam.h"
 #include "sof/image_context.h"
 #include "sof/image_manager.h"
@@ -44,7 +43,7 @@ public:
   BaseLauncher(ICameraRig& cameraRig, const odom::Settings& svo_settings);
   virtual ~BaseLauncher() = default;
 
-  void SetupSlam(bool reproduce_mode);
+  void SetupSlam();
   ErrorCode launch();
 
   size_t nFrames() const;
@@ -73,7 +72,7 @@ public:
   // if filter2dTracks then keep only 2dtracks visible >=2 keyframe.
   bool saveResultToEdex(const std::string& outEdexName, const camera::ICameraModel& intrinsics, bool filter2dTracks,
                         edex::RotationStyle rs = edex::RotationStyle::RotationMatrix) const;
-  bool saveResultToComposedRTJson(const std::string& outComposedRTJsonFileName) const;
+  [[maybe_unused]] bool saveResultToComposedRTJson(const std::string& outComposedRTJsonFileName) const;
 
   void registerTrackingLostCB(const std::function<void()>& cb);
 
@@ -82,8 +81,10 @@ public:
 protected:
   virtual void SetupTracker(const odom::Settings& svo_settings, bool use_gpu) = 0;
 
-  virtual bool launch_vo(Isometry3T& delta, Matrix6T& pose_info) = 0;
+  virtual bool launch_vo(Isometry3T& delta, Matrix6T& pose_info, const odom::TrackPerFrameSettings& per_frame) = 0;
   virtual const odom::IVisualOdometry::VOFrameStat& last_vo_stat() = 0;
+
+  void SetPerFrameSettings(const odom::TrackPerFrameSettings& s) { per_frame_settings_ = s; }
 
   static void convertTracksContainer(const Tracks2DFrameMap& mapContainer, Tracks2DVectorsMap& vecPairContainer);
 
@@ -96,10 +97,6 @@ protected:
 
   // async slam
   std::unique_ptr<slam::AsyncSlam> async_slam_;
-  uint64_t last_async_slam_telemetry_timestamp_ = 0;
-
-  // slam localizer (db)
-  std::unique_ptr<slam::AsyncLocalizer> slam_localizer_;
 
   struct FrameStat {
     float totalFrameResidual;  // using only triangulated tracker
@@ -107,6 +104,7 @@ protected:
   };
   ICameraRig& cameraRig_;
   odom::Settings svo_settings_;
+  odom::TrackPerFrameSettings per_frame_settings_;
   std::chrono::time_point<std::chrono::steady_clock> last_frame_start_;
 
   camera::Rig rig;

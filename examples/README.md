@@ -34,6 +34,8 @@ pip install -r requirements.txt
 
 Explore various examples to quickly get started with cuVSLAM using [Python API (PyCuVSLAM)](#visual-tracking-mode-examples) or [C++ API](#c-api-examples).
 
+> **Note:** All example scripts use the [Rerun viewer](https://rerun.io/docs/reference/viewer/overview) for interactive visualization of trajectories, camera frames, and mapped features. The Rerun UI will remain open after an example script finishes, allowing you to replay, inspect, and interact with the visualized session data.
+
 ### Visual Tracking Mode Examples
 
 - **Monocular Visual Odometry**

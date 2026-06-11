@@ -102,9 +102,11 @@ def save_callback(success):
     global map_saved
     map_saved = success
 
+def localization_start_cb():
+    print("Localization started")
 
 # Localization callback to set slam_initial_pose and trigger localization_complete event
-def localization_callback(pose, error_message):
+def localization_finish_cb(pose, error_message):
     global slam_initial_pose  # Declare slam_initial_pose as global
     print(f"Localization result: {pose}, {error_message}")
     slam_initial_pose = pose
@@ -206,17 +208,18 @@ if os.path.exists(trajectory_file) and os.path.exists(map_path):
 
 # If guess pose is not None, localize in map
 if os.path.exists(map_path) and (guess_pose is not None):
-
+    timestamp = timestamps[IDX]
     init_images = [
         asarray(Image.open(os.path.join(sequence_path, f'image_{cam}', f'{IDX:0>6}.png')))
         for cam in [0, 1]
     ]
-    _, _ = tracker.track(timestamps[IDX], init_images)
+    _, _ = tracker.track(timestamp, init_images)
 
-    tracker.localize_in_map(map_path, guess_pose, init_images, loc_settings, localization_callback)
+    tracker.localize_in_map(map_path, timestamp, guess_pose, init_images, loc_settings, localization_start_cb,
+                            localization_finish_cb)
 
     wait_time = 0
-    wait_timestamp_ns = timestamps[IDX]
+    wait_timestamp_ns = timestamp
     # Wait for localization to complete with proper tracking, but only up to max_wait_time seconds
     while not SLAM_SYNC_MODE and not localization_complete.wait(timeout=0.5) and wait_time < max_wait_time:
         print(f"Waiting for localization... timestamp: {wait_time}")

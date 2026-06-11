@@ -412,7 +412,8 @@ __global__ void evaluate_cost_stage_1_kernel(
     const cuvslam::cuda::Matf33* __restrict__ problem_rig_poses_preint_gyro_random_walk_accum_info_matrix__ptr,
     cuvslam::cuda::Matf33* __restrict__ imu_from_w_linear, float* __restrict__ imu_from_w_translation,
     float* __restrict__ cost_ptr, float threshold, int num_poses, int num_fixed_key_frames, float prior_gyro,
-    float prior_acc, float3 gravity, float imu_penalty, float robustifier_scale_pose) {
+    float prior_acc, float3 gravity, float imu_penalty, float boundary_imu_penalty, float acc_rw_penalty,
+    float robustifier_scale_pose) {
   float cost = 0.f;
 
   const int pose_id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -473,8 +474,11 @@ __global__ void evaluate_cost_stage_1_kernel(
       pu1_acc_bias.d_[1] += update_pose_acc_bias.d_[1];
       pu1_acc_bias.d_[2] += update_pose_acc_bias.d_[2];
 
-      cost += prior_gyro * dot(pu1_gyro_bias, pu1_gyro_bias);
-      cost += prior_acc * dot(pu1_acc_bias, pu1_acc_bias);
+      // bias priors on oldest non-fixed pose only
+      if (pose_id == num_fixed_key_frames) {
+        cost += prior_gyro * dot(pu1_gyro_bias, pu1_gyro_bias);
+        cost += prior_acc * dot(pu1_acc_bias, pu1_acc_bias);
+      }
     }
     cuvslam::cuda::Matf33 imu_from_w_linear_s = transp(pu1_w_from_imu_linear);
     cuvslam::cuda::Vecf3 pu1_w_from_imu_translation_neg;
@@ -488,6 +492,7 @@ __global__ void evaluate_cost_stage_1_kernel(
     imu_from_w_translation[3 * pose_id + 2] = imu_from_w_translation_s.d_[2];
 
     if ((pose_id != num_poses - 1) && (pose_id + 1 >= num_fixed_key_frames)) {
+      const float eff_penalty = (pose_id < num_fixed_key_frames) ? boundary_imu_penalty : imu_penalty;
       cuvslam::cuda::Matf33 pu2_w_from_imu_linear = problem_rig_poses_w_from_imu_linear[pose_id + 1];
       cuvslam::cuda::Vecf3 pu2_w_from_imu_translation;
       pu2_w_from_imu_translation.d_[0] = problem_rig_poses_other[12 * (pose_id + 1)];
@@ -611,10 +616,13 @@ __global__ void evaluate_cost_stage_1_kernel(
       cuvslam::cuda::Vecf3 random_walk_gyro_error = pu1_gyro_bias - pu2_gyro_bias;
       cuvslam::cuda::Vecf3 random_walk_acc_error = pu1_acc_bias - pu2_acc_bias;
 
-      cost += imu_penalty * dot(random_walk_gyro_error,
+      cost += eff_penalty * dot(random_walk_gyro_error,
                                 problem_rig_poses_preint_gyro_random_walk_accum_info_matrix_ * random_walk_gyro_error);
-      cost += imu_penalty * dot(random_walk_acc_error,
-                                problem_rig_poses_preint_acc_random_walk_accum_info_matrix_ * random_walk_acc_error);
+      // Acc random walk is NOT boundary-downweighted to keep bias chain strong
+      const float eff_acc_rw_penalty = (acc_rw_penalty >= 0) ? acc_rw_penalty : imu_penalty;
+      cost +=
+          eff_acc_rw_penalty * dot(random_walk_acc_error,
+                                   problem_rig_poses_preint_acc_random_walk_accum_info_matrix_ * random_walk_acc_error);
 
       cuvslam::cuda::Vecf9 inertial_error;
       inertial_error.d_[0] = rot_error.d_[0];
@@ -630,7 +638,7 @@ __global__ void evaluate_cost_stage_1_kernel(
       inertial_error.d_[8] = v2.d_[2];
 
       cost +=
-          ComputeHuberLoss(imu_penalty * dot(inertial_error, problem_rig_poses_preint_info_matrix_ * inertial_error),
+          ComputeHuberLoss(eff_penalty * dot(inertial_error, problem_rig_poses_preint_info_matrix_ * inertial_error),
                            robustifier_scale_pose);
     }
   }
@@ -698,7 +706,7 @@ __global__ void evaluate_cost_stage_2_kernel(
     cuvslam::cuda::Vecf3 p_c;
     mul_add(problem_rig_camera_from_rig_linear, v2, problem_rig_camera_from_rig_translation, p_c);
 
-    if (p_c.d_[2] < 0.f) {
+    if (p_c.d_[2] > 0.f) {
       cuvslam::cuda::Vecf2 r;
       r.d_[0] = p_c.d_[0] / p_c.d_[2] - problem_observation_xys.d_[0];
       r.d_[1] = p_c.d_[1] / p_c.d_[2] - problem_observation_xys.d_[1];
@@ -931,7 +939,7 @@ __global__ void update_model_stage_1_kernel(
   cuvslam::cuda::Matf23 model_repr_jacobians_jt{0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
   cuvslam::cuda::Matf23 model_repr_jacobians_jr{0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
   cuvslam::cuda::Matf23 model_repr_jacobians_jp{0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
-  if (p_c.d_[2] < 0.f) {
+  if (p_c.d_[2] > 0.f) {
     cuvslam::cuda::Matf33 Rimu_from_w = imu_from_w_linear;
     cuvslam::cuda::Matf33 Rcam_from_imu = cam_from_imu_linear;
 
@@ -1504,7 +1512,7 @@ __global__ void build_full_system_stage_3_kernel(
     const float* __restrict__ model_random_walk_acc_residuals_ptr, const float* __restrict__ problem_rig_poses_other,
     float* __restrict__ full_system_pose_block, int full_system_pose_block_pitch,
     float* __restrict__ full_system_pose_rhs, int num_poses, int num_fixed_key_frames, float robustifier_scale_pose,
-    float imu_penalty, float prior_gyro, float prior_acc) {
+    float imu_penalty, float boundary_imu_penalty, float acc_rw_penalty, float prior_gyro, float prior_acc) {
   int x = threadIdx.x;
   int y = threadIdx.y;
   int id = blockIdx.x;
@@ -1548,8 +1556,11 @@ __global__ void build_full_system_stage_3_kernel(
     for (int j = 0; j < 9; ++j) e.d_[j] = model_inertial_residuals[i * 9 + j];
     float w = ComputeDHuberLoss(dot(e, info * e), robustifier_scale_pose);
 
+    const bool is_acc_block = ((x == 4) || (x == 9)) || ((y == 4) || (y == 9));
+    const float rw_penalty_this_edge =
+        is_acc_block ? ((acc_rw_penalty >= 0) ? acc_rw_penalty : imu_penalty) : imu_penalty;
     cuvslam::cuda::Matf33 info_gyro_or_acc_rw =
-        imu_penalty * problem_rig_poses_preint_gyro_or_acc_random_walk_accum_info_matrix_;
+        rw_penalty_this_edge * problem_rig_poses_preint_gyro_or_acc_random_walk_accum_info_matrix_;
 
     if (max_xy < 8) {
       const cuvslam::cuda::Matf93* m_left_ptr;
@@ -1655,6 +1666,9 @@ __global__ void build_full_system_stage_3_kernel(
     }  // if ((x == y) && (x < 5))
   }    // if (i < num_poses - 1)
 
+  // edge i-1: boundary when i-1 is the last fixed frame (i == num_fixed_key_frames)
+  const float eff_penalty_prev = (i == num_fixed_key_frames) ? boundary_imu_penalty : imu_penalty;
+
   if ((x < 3) && (y < 3)) {
     cuvslam::cuda::Matf99 info = problem_rig_poses_preint_info_matrix__ptr[i - 1];
 
@@ -1694,7 +1708,7 @@ __global__ void build_full_system_stage_3_kernel(
     }
     cuvslam::cuda::Matf93 m_right = m_right_ptr[i - 1];
 
-    cuvslam::cuda::Matf33 h = (w * imu_penalty) * (transp(m_left) * info * m_right);
+    cuvslam::cuda::Matf33 h = (w * eff_penalty_prev) * (transp(m_left) * info * m_right);
     if (y > x) h = transp(h);
 
     m = m + h;
@@ -1713,7 +1727,7 @@ __global__ void build_full_system_stage_3_kernel(
           break;
       }
       cuvslam::cuda::Matf93 m_left = m_left_ptr[i - 1];
-      v = v - (w * imu_penalty) * (transp(m_left) * (info * e));
+      v = v - (w * eff_penalty_prev) * (transp(m_left) * (info * e));
     }
   }  // if ((x < 3) && (y < 3))
 
@@ -1726,8 +1740,10 @@ __global__ void build_full_system_stage_3_kernel(
           problem_rig_poses_preint_acc_random_walk_accum_info_matrix__ptr;
     cuvslam::cuda::Matf33 problem_rig_poses_preint_gyro_or_acc_random_walk_accum_info_matrix_ =
         problem_rig_poses_preint_gyro_or_acc_random_walk_accum_info_matrix__ptr[i - 1];
+    // Acc random walk (x==4) is NOT boundary-downweighted to keep bias chain strong
+    const float rw_penalty = (x == 4) ? ((acc_rw_penalty >= 0) ? acc_rw_penalty : imu_penalty) : eff_penalty_prev;
     cuvslam::cuda::Matf33 info_gyro_or_acc_rw =
-        imu_penalty * problem_rig_poses_preint_gyro_or_acc_random_walk_accum_info_matrix_;
+        rw_penalty * problem_rig_poses_preint_gyro_or_acc_random_walk_accum_info_matrix_;
 
     m = m + info_gyro_or_acc_rw;
 
@@ -1742,8 +1758,8 @@ __global__ void build_full_system_stage_3_kernel(
     }
   }
 
-  // bias priors
-  if ((x == y) && ((x == 3) || (x == 4))) {
+  // bias priors on oldest non-fixed pose only
+  if ((id == 0) && (x == y) && ((x == 3) || (x == 4))) {
     float prior = (x == 3) ? prior_gyro : prior_acc;
 
     for (int j = 0; j < 3; ++j) m.d_[j][j] += prior;
@@ -1862,8 +1878,8 @@ cudaError_t evaluate_cost(
     const cuvslam::cuda::Matf22* problem_observation_infos, cuvslam::cuda::Matf33* imu_from_w_linear,
     float* imu_from_w_translation, float* cost, int* num_skipped, float* partial_costs, float threshold, int num_poses,
     int num_observations, int num_fixed_key_frames, float prior_gyro, float prior_acc, float3 gravity,
-    float imu_penalty, float robustifier_scale_pose, float robustifier_scale,
-    const cuvslam::cuda::Matf33& calib_left_from_imu_linear,
+    float imu_penalty, float boundary_imu_penalty, float acc_rw_penalty, float robustifier_scale_pose,
+    float robustifier_scale, const cuvslam::cuda::Matf33& calib_left_from_imu_linear,
     const cuvslam::cuda::Vecf3& calib_left_from_imu_translation, cudaStream_t s) {
   {
     const int THREADBLOCK_SIZE = 32;
@@ -1876,8 +1892,8 @@ cudaError_t evaluate_cost(
         problem_rig_poses_preint_dP, problem_rig_poses_preint_dT_s, problem_rig_poses_preint_info_matrix_,
         problem_rig_poses_preint_acc_random_walk_accum_info_matrix_,
         problem_rig_poses_preint_gyro_random_walk_accum_info_matrix_, imu_from_w_linear, imu_from_w_translation, cost,
-        threshold, num_poses, num_fixed_key_frames, prior_gyro, prior_acc, gravity, imu_penalty,
-        robustifier_scale_pose);
+        threshold, num_poses, num_fixed_key_frames, prior_gyro, prior_acc, gravity, imu_penalty, boundary_imu_penalty,
+        acc_rw_penalty, robustifier_scale_pose);
     const cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) return error;
   }
@@ -2044,7 +2060,7 @@ cudaError_t build_full_system(
     float* full_system_point_pose_block_transposed, int full_system_point_pose_block_transposed_pitch,
     float* full_system_pose_block, int full_system_pose_block_pitch, float* full_system_pose_rhs, int num_observations,
     int num_points, int num_poses, int num_fixed_key_frames, float robustifier_scale_pose, float imu_penalty,
-    float prior_gyro, float prior_acc, cudaStream_t s) {
+    float boundary_imu_penalty, float acc_rw_penalty, float prior_gyro, float prior_acc, cudaStream_t s) {
   int num_poses_opt = num_poses - num_fixed_key_frames;
 
   {
@@ -2113,8 +2129,8 @@ cudaError_t build_full_system(
         model_inertial_jacobians_jv_right, problem_rig_poses_preint_acc_random_walk_accum_info_matrix_,
         problem_rig_poses_preint_gyro_random_walk_accum_info_matrix_, model_random_walk_gyro_residuals,
         model_random_walk_acc_residuals, problem_rig_poses_other, full_system_pose_block, full_system_pose_block_pitch,
-        full_system_pose_rhs, num_poses, num_fixed_key_frames, robustifier_scale_pose, imu_penalty, prior_gyro,
-        prior_acc);
+        full_system_pose_rhs, num_poses, num_fixed_key_frames, robustifier_scale_pose, imu_penalty,
+        boundary_imu_penalty, acc_rw_penalty, prior_gyro, prior_acc);
     const cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) return error;
   }

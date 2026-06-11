@@ -22,15 +22,16 @@
 
 namespace cuvslam::sof {
 
-std::unique_ptr<GPULKFeatureTracker> CreateGPUTracker(const char* name) {
-  if (std::string("lk") == name) {
-    return std::make_unique<GPULKFeatureTracker>();
+std::unique_ptr<GPULKFeatureTracker> CreateGPUTracker(TrackerType type) {
+  switch (type) {
+    case TrackerType::LK:
+      return std::make_unique<GPULKFeatureTracker>();
+    case TrackerType::LKHorizontal:
+      return std::make_unique<GPULKTrackerHorizontal>();
+    default:
+      TraceError("Unsupported GPU tracker type");
+      return nullptr;
   }
-  if (std::string("lk_horizontal") == name) {
-    return std::make_unique<GPULKTrackerHorizontal>();
-  }
-  TraceError("Unknown GPU tracker name=%s", name);
-  return nullptr;
 }
 
 MultiSOFGPU::MultiSOFGPU(const camera::Rig& rig, const camera::FrustumIntersectionGraph& fid,
@@ -49,7 +50,7 @@ MultiSOFGPU::MultiSOFGPU(const camera::Rig& rig, const camera::FrustumIntersecti
 
     auto& tracker_from_secondary_cam = secondary_from_primary_sof_[primary_cam_id];
     for (CameraId secondary_cam_id : secondary_cams) {
-      auto tracker_ptr = CreateGPUTracker(sof_settings.lr_tracker.c_str());
+      auto tracker_ptr = CreateGPUTracker(sof_settings.lr_tracker);
       tracker_from_secondary_cam[secondary_cam_id].tracker = std::move(tracker_ptr);
     }
   }

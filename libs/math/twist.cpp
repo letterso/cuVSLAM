@@ -54,7 +54,7 @@ void Log(cuvslam::Vector<T, Dim>& result, const cuvslam::Isometry3T& trans) {
   const float wmag = std::atan2(rvec.dot(wvec), a.trace() + 2);
 
   if (Dim == 3) {
-    result << wmag * wvec;
+    result.head(3) = wmag * wvec;
   } else {
     const float wmag_2 = wmag / 2;
     const Vector3T t = trans.translation();
@@ -63,7 +63,8 @@ void Log(cuvslam::Vector<T, Dim>& result, const cuvslam::Isometry3T& trans) {
     Vector3T v =
         t + (std::abs(wmag) < epsilon() ? 0 : (1 - wmag_2 / std::tan(wmag_2))) * wvec.cross(wxt) - wmag_2 * wxt;
 
-    result << (wmag * wvec), v;
+    result.head(3) = wmag * wvec;
+    result.tail(3) = v;
   }
 }
 

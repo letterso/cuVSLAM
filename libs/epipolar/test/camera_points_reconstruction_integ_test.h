@@ -88,8 +88,8 @@ bool Verify3DPointsInFrontOFBothCameras(const cuvslam::Vector3TVector& points3D,
     Vector3T localSpace1 = camera1Inverse * point3D;
     Vector3T localSpace2 = camera2Inverse * point3D;
 
-    if (localSpace1.z() > epipolar::FrustumProperties::MINIMUM_HITHER ||
-        localSpace2.z() > epipolar::FrustumProperties::MINIMUM_HITHER) {
+    if (localSpace1.z() <= epipolar::FrustumProperties::MINIMUM_HITHER ||
+        localSpace2.z() <= epipolar::FrustumProperties::MINIMUM_HITHER) {
       return false;
     }
   }
@@ -149,8 +149,8 @@ class CameraPointsReconstructionIntegTest : public testing::Test {
 public:
   virtual void SetUp() {
     // 3D points are randomly generated in a cube defined by minRange, maxRange.
-    const Vector3T minRange(3, 2, -16);
-    const Vector3T maxRange(13, 10, -5);
+    const Vector3T minRange(3, 2, 5);
+    const Vector3T maxRange(13, 10, 16);
 
     // camera1 is kernels_initialized at the origin and aligned with the world coordinate since camera1
     // will be the frame of reference.
@@ -163,11 +163,11 @@ public:
     expectedRelativeTransform_ = (absoluteCamera2_.inverse()) * absoluteCamera1_;
 
     auto validator = [&](const Vector3T& p) -> bool {
-      return (absoluteCamera1_.inverse() * p).z() < FrustumProperties::MINIMUM_HITHER &&
-             (absoluteCamera2_.inverse() * p).z() < FrustumProperties::MINIMUM_HITHER;
+      return (absoluteCamera1_.inverse() * p).z() > FrustumProperties::MINIMUM_HITHER &&
+             (absoluteCamera2_.inverse() * p).z() > FrustumProperties::MINIMUM_HITHER;
     };
 
-    expected3DPoints_ = utils::GeneratePointsInCube(num3DPoints_, minRange, maxRange, validator);
+    expected3DPoints_ = GeneratePointsInCube(num3DPoints_, minRange, maxRange, validator);
 
     ASSERT_TRUE(Verify3DPointsInFrontOFBothCameras(expected3DPoints_, absoluteCamera1_, absoluteCamera2_));
 

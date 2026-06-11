@@ -28,8 +28,9 @@ void MultiCameraLauncher::SetupTracker(const odom::Settings& svo_settings, bool 
   tracker->enable_stat(true);
 }
 
-bool MultiCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info) {
-  return tracker->track(curr_sources, {}, curr_image_ptrs, prev_image_ptrs, masks_sources, delta, pose_info);
+bool MultiCameraLauncher::launch_vo(Isometry3T& delta, Matrix6T& pose_info,
+                                    const odom::TrackPerFrameSettings& per_frame) {
+  return tracker->track(curr_sources, {}, curr_image_ptrs, prev_image_ptrs, masks_sources, delta, pose_info, per_frame);
 }
 
 const odom::IVisualOdometry::VOFrameStat& MultiCameraLauncher::last_vo_stat() { return *tracker->get_last_stat(); }

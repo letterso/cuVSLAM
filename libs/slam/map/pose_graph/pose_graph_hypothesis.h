@@ -30,7 +30,7 @@ namespace cuvslam::slam {
 
 class PoseGraphHypothesis {
 public:
-  PoseGraphHypothesis() {}
+  PoseGraphHypothesis() = default;
 
   PoseGraphHypothesis(const PoseGraphHypothesis&) = delete;
   PoseGraphHypothesis& operator=(const PoseGraphHypothesis&) = delete;
@@ -40,17 +40,12 @@ public:
   void SetKeyframePose(KeyFrameId keyframe, const Isometry3T& m);
 
   // make copy
-  std::shared_ptr<PoseGraphHypothesis> MakeCopy() const;
-  void MakeCopy(PoseGraphHypothesis& pgh) const;
+  [[nodiscard]] std::shared_ptr<PoseGraphHypothesis> MakeCopy() const;
 
   void PutToDatabase(ISlamDatabase* database) const;
   bool GetFromDatabase(ISlamDatabase* database);
 
   void CopyTo(PoseGraphHypothesis& pose_graph_hypothesis_dst) const;
-
-  // methods for merge pose graphs hypothesis:
-  bool Reindex(const std::map<KeyFrameId, KeyFrameId>& keyframe_id_remap);
-  bool Union(const PoseGraphHypothesis& pgh);
 
   void swap(PoseGraphHypothesis& to_swap) noexcept;
 

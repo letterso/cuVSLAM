@@ -25,9 +25,11 @@
 #include "common/image.h"
 #include "common/isometry.h"
 
+#include "odometry/svo_config.h"
 #include "sof/feature_prediction_interface.h"
 #include "sof/image_manager.h"
 #include "sof/kf_selector.h"
+#include "sof/sof_config.h"
 #include "sof/sof_mono_interface.h"
 
 namespace cuvslam::sof {
@@ -37,11 +39,12 @@ public:
   virtual bool trackNextFrame(const Sources& curr_sources, Images& curr_images, const Images& prev_images,
                               const Sources& masks_sources, const Isometry3T& predicted_world_from_rig,
                               std::unordered_map<CameraId, std::vector<camera::Observation>>& observations,
-                              FrameState& state) = 0;
+                              FrameState& state, const odom::TrackPerFrameSettings& per_frame) = 0;
 
   virtual void reset() = 0;
 
   virtual void reset_keyframe_selector() = 0;
+
   virtual ~IMultiSOF() = default;
 };
 

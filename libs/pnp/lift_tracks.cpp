@@ -35,7 +35,7 @@ void VisualICP::lift_mono_tracks(const IcpInfo& inputs, const Isometry3T& world_
   cuvslam::cuda::GPUICPTools::ObsLmPair pair;
 
   for (const auto& obs : observations) {
-    pair.obs_xy = {-obs.xy.x(), obs.xy.y()};
+    pair.obs_xy = {obs.xy.x(), obs.xy.y()};
 
     tracks.push_back(pair);
   }
@@ -56,7 +56,7 @@ void VisualICP::lift_mono_tracks(const IcpInfo& inputs, const Isometry3T& world_
   for (size_t i = 0; i < tracks.size(); i++) {
     const auto& obs = observations[i];
     const Vector3T& lm = lms[i];
-    if (lm.z() < -1e-1) {
+    if (lm.z() > 1e-1f) {
       landmarks.push_back({obs.id, world_from_depth * lm});
     }
   }

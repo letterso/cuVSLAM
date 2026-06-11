@@ -25,7 +25,6 @@
 #include "epipolar/test/generate_points_in_cube_test.h"
 #include "epipolar/test/resectioning_utils_test.h"
 #include "pnp/multicam_pnp.h"
-
 namespace test::epipolar {
 
 using namespace cuvslam;
@@ -61,8 +60,8 @@ protected:
                                    expectedWorldFromCamera_));
 
     // Generate a set of 3D points
-    points3D_ = utils::GeneratePointsInCube(num3DPoints_, minRange_, maxRange_, [&](const Vector3T& p) -> bool {
-      return (expectedWorldFromCamera_.inverse() * p).z() < FrustumProperties::MINIMUM_HITHER;
+    points3D_ = GeneratePointsInCube(num3DPoints_, minRange_, maxRange_, [&](const Vector3T& p) -> bool {
+      return (expectedWorldFromCamera_.inverse() * p).z() > FrustumProperties::MINIMUM_HITHER;
     });
 
     ASSERT_TRUE(points3D_.size() == num3DPoints_);
@@ -72,8 +71,7 @@ protected:
     Project3DPointsInLocalCoordinates(expectedWorldFromCamera_.inverse(), points3D_, points2DLocal_);
 
     // Add some noise to 2D points
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    std::mt19937 gen(::testing::UnitTest::GetInstance()->random_seed());
     std::normal_distribution<float> d(0.f, noiseSigma_);
 
     points2DLocalWithNoise_.resize(points2DLocal_.size());

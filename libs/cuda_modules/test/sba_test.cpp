@@ -27,12 +27,10 @@
 #include "profiler/profiler.h"
 #include "sba/bundle_adjustment_problem.h"
 #include "sba/schur_complement_bundler_cpu.h"
-
 namespace {
 using namespace cuvslam;
 
 using ProfilerDomain = cuvslam::profiler::DefaultProfiler::DomainHelper;
-std::default_random_engine rng;
 ProfilerDomain helper("SBA_TEST");
 
 void GenerateProblem(sba::BundleAdjustmentProblem& problem, const camera::Rig& rig,
@@ -41,8 +39,11 @@ void GenerateProblem(sba::BundleAdjustmentProblem& problem, const camera::Rig& r
   using namespace cuvslam;
   problem = {};
 
-  rng.discard(70000);
-  std::uniform_real_distribution<float> depth(-16.f, -2.f);
+  // std::rand() is seeded per-test; each call advances its state, so repeated
+  // calls to GenerateProblem within the same test get different seeds.
+  auto seed = std::rand();
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<float> depth(2.f, 16.f);
   std::uniform_real_distribution<float> xy(-4.f, 4.f);
 
   std::uniform_real_distribution<float> dt(-2.f, 2.f);
@@ -76,7 +77,7 @@ void GenerateProblem(sba::BundleAdjustmentProblem& problem, const camera::Rig& r
         // cam space
         Vec3 p = rig.camera_from_rig[cam_idx] * rig_from_world[pose_idx] * points[point_idx];
 
-        if (p.z() >= 0.f) {
+        if (p.z() <= 1.f) {
           continue;
         }
 

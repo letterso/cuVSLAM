@@ -23,9 +23,9 @@
 #include "camera_rig_edex/blackout_oscillator_filter.h"
 #include "camera_rig_edex/repeated_camera_rig_edex.h"
 #include "camera_rig_edex/shuttle_camera_rig_edex.h"
+#include "common/coordinate_system.h"
 #include "common/environment.h"
 #include "common/include_json.h"
-#include "common/isometry_utils.h"
 #include "common/log_types.h"
 #include "common/rerun.h"
 #include "edex/edex.h"
@@ -46,7 +46,6 @@ DEFINE_string(gt_file, "", "Path to ground truth poses file (KITTI format). If e
 DEFINE_int32(camera_id, 0, "camera_id");
 DEFINE_bool(verbose, true, "Enable verbosity");
 DEFINE_bool(use_slam, false, "use slam");
-DEFINE_bool(slam_reproduce_mode, false, "slam reproduce mode: synced and nonrandom");
 DEFINE_bool(filter_tracks, true, "Filter 2D tracks");
 DEFINE_bool(use_seq_path, true, "Search for edex file inside CUVSLAM_DATASETS path");
 DEFINE_int32(sequence_num_repeats, 1, "How many times repeat the sequence");
@@ -83,7 +82,7 @@ int main(int argC, char** ppArgV) {
   std::string sequence_folder = Environment::GetVar(Environment::CUVSLAM_DATASETS);
   if (!IsPathEndWithSlash(sequence_folder)) sequence_folder += '/';
 
-  if (sequence_folder.size() == 0) {
+  if (sequence_folder.empty()) {
     std::cout << "Can't understand where is sequence folder. Check CUVSLAM_DATASETS environment variable." << std::endl;
     return 0;
   }
@@ -159,7 +158,7 @@ int main(int argC, char** ppArgV) {
     rig = std::move(filter);
   }
 
-  const Isometry3T& rig_from_imu = f.imu_.transform;
+  const Isometry3T rig_from_imu = LegacyEdexImuExtrinsicToOpenCV(f.imu_.transform);
   float gyroscope_noise_density = f.imu_.gyroscope_noise_density;          // rad / (s * srqt(Hz))
   float gyroscope_random_walk = f.imu_.gyroscope_random_walk;              // rad / (s ^ 2 * srqt(Hz))
   float accelerometer_noise_density = f.imu_.accelerometer_noise_density;  // m / (s ^ 2 * srqt(Hz))
@@ -182,7 +181,7 @@ int main(int argC, char** ppArgV) {
   }
 
   if (FLAGS_use_slam) {
-    launcher->SetupSlam(FLAGS_slam_reproduce_mode);
+    launcher->SetupSlam();
   }
 
   const auto start = std::chrono::steady_clock::now();

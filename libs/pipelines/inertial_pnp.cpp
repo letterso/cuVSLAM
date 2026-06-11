@@ -22,6 +22,7 @@
 
 #include "camera/observation.h"
 #include "camera/rig.h"
+#include "common/log.h"
 #include "common/vector_3t.h"
 #include "imu/soft_inertial_pnp.h"
 
@@ -38,15 +39,22 @@ bool InertialPnP::Solve(const imu::ImuCalibration& calib, const std::unordered_m
 
   sba_imu::StereoPnPInput input;
   input.gravity = gravity_w;
-  input.prior_acc = 1e5f;
-  input.prior_gyro = 1e3f;
+  input.prior_acc = 0.0f;
+  input.prior_gyro = 0.0f;
+  input.freeze_bias = true;
   input.rig = rig;
+
   input.robustifier_scale = 0.4f;
-  input.robustifier_scale_pose = 2.f;
+  input.imu_penalty = 1e-3f;
+  input.robustifier_scale_pose = -1.0f;
   input.max_iterations = 20;
   input.outlier_thresh = {10.f, 7.f};
-  input.translation_constraint = 1e5f;
+  input.translation_constraint = 0;
   input.robustifier_scale_tr = 0.02f;
+
+  // Scale observation info from the default σ=3px to σ=1px (9x stronger visual weight).
+  constexpr float visual_noise_px = 1.0f;
+  constexpr float info_scale = (3.0f / visual_noise_px) * (3.0f / visual_noise_px);
 
   std::unordered_map<int, int> track_to_point;
   for (const auto& track : observations) {
@@ -70,18 +78,24 @@ bool InertialPnP::Solve(const imu::ImuCalibration& calib, const std::unordered_m
       input.point_ids.push_back(point_id);
       input.camera_ids.push_back(track.cam_id);
       input.observation_xys.push_back(track.xy);
-      input.observation_infos.push_back(track.xy_info);
+      input.observation_infos.push_back(track.xy_info * info_scale);
     }
   }
 
+  TraceMessage("InertialPnP: obs=%d points=%d", (int)input.observation_xys.size(), (int)input.points.size());
+
   const int kMinObservations = 25;
   if (input.observation_xys.size() < kMinObservations) {
+    TraceMessage("InertialPnP: REJECTED obs < %d", kMinObservations);
     return false;
   }
 
   TRACE_EVENT ev1 = profiler_domain_.trace_event("SoftInertialPnP");
-  bool status = SoftInertialPnP(calib, input, prev_pose, curr_pose, 1e-3f);
 
+  bool status = SoftInertialPnP(calib, input, prev_pose, curr_pose, input.imu_penalty);
+  // bool status = SoftInertialPnPWithOutliers(calib, input, prev_pose, curr_pose,   input.imu_penalty);
+
+  TraceMessage("InertialPnP: status=%d", status);
   return status;
 }
 

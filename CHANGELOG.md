@@ -1,5 +1,24 @@
 # Changelog
 
+## [16.0.0] - 2026-06-02
+
+Bugfixes in IMU integration, SLAM map loading, etc.
+
+### Added
+- Load-map documentation
+- Missing tests for Python bindings
+
+### Changed
+- Refactored string-based settings to use enums
+- Posegraph code cleanup
+- Improved build support for native ARM targets
+
+### Fixed
+- Two IMU integration bugs causing stereo+IMU to underperform stereo-only
+- SLAM jump after map load
+- Cross-stream memory visibility race on Blackwell (sm_121)
+- CUDA architecture selection logic
+
 ## [15.0.0] - 2026-03-02
 
 Initial open-source release.

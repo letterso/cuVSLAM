@@ -38,7 +38,6 @@
 #include "map/keyframe.h"
 
 namespace cuvslam::map {
-using namespace cuvslam::camera;
 
 using namespace cuvslam::sba_imu;
 using PreintegPtr = std::shared_ptr<IMUPreintegration>;

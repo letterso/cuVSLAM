@@ -20,7 +20,6 @@ set(SOURCES
 
 setup_staticlib_project(
         MODULE_NAME "${MODULE_NAME}"
-        HEADERS ${HEADERS}
         SOURCES ${SOURCES}
         LIBRARIES
             common

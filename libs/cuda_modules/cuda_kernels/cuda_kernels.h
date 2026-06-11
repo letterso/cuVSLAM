@@ -169,7 +169,7 @@ struct ImgTextures {
 };
 
 struct Track {
-  float2 obs_xy;  // observation in image frame
+  float2 obs_xy;  // normalized undistorted coords (OpenCV-style): (u-cx)/fx, (v-cy)/fy
   float3 lm_xyz;  // landmark in world frame
 };
 

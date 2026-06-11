@@ -36,8 +36,8 @@ public:
   ~MonoVisualOdometry() override = default;
 
   bool track(const Sources& curr_sources, const DepthSources& depth_sources, sof::Images& curr_images,
-             const sof::Images& prev_images, const Sources& masks_sources, Isometry3T& delta,
-             Matrix6T& static_info_exp) override;
+             const sof::Images& prev_images, const Sources& masks_sources, Isometry3T& delta, Matrix6T& static_info_exp,
+             const TrackPerFrameSettings& per_frame_setting) override;
 
   void enable_stat(bool enable) override;
   const std::unique_ptr<VOFrameStat>& get_last_stat() const override;

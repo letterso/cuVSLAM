@@ -151,15 +151,22 @@ void run_imu_sba(const UnifiedMap::SubMap& recent_map, const Vector3T& gravity, 
   sba_imu::ImuBAProblem problem;
   problem.rig = rig;
   problem.gravity = gravity;
-  problem.robustifier_scale = 0.6f;
-  problem.prior_acc = 1e6f;
-  problem.prior_gyro = 1e3f;
-  problem.imu_penalty = 1e-3f;
+  problem.robustifier_scale = 1.5f;
+  problem.robustifier_scale_pose = -1.0f;
+  problem.prior_acc = 0;
+  problem.prior_gyro = 0;
+  problem.imu_penalty = 1e-2f;
+  problem.boundary_imu_penalty = 1e-2f;
+  problem.acc_rw_penalty = 0.1f;
+
+  // Scale observation info from the default σ=3px to σ=1px (9x stronger visual weight).
+  constexpr float visual_noise_px = 1.0f;
+  constexpr float info_scale = (3.0f / visual_noise_px) * (3.0f / visual_noise_px);
   problem.reintegration_thresh = 1e-3f;
 
   // we want this many fixed key frames
   problem.num_fixed_key_frames =
-      CalcNumFixedKeyframes(recent_map.consecutive_keyframes.size(), sba_settings.num_fixed_sba_frames);
+      CalcNumFixedKeyframes(recent_map.consecutive_keyframes.size(), sba_settings.num_inertial_fixed_sba_frames);
 
   if (problem.num_fixed_key_frames < 1) {
     return;
@@ -221,7 +228,7 @@ void run_imu_sba(const UnifiedMap::SubMap& recent_map, const Vector3T& gravity, 
 
       for (const auto& o : obs) {
         problem.observation_xys.push_back(o.xy);
-        problem.observation_infos.push_back(o.xy_info);
+        problem.observation_infos.push_back(o.xy_info * info_scale);
         problem.point_ids.push_back(point_id);
         problem.pose_ids.push_back(pose_id);
         problem.camera_ids.push_back(o.cam_id);
@@ -230,10 +237,10 @@ void run_imu_sba(const UnifiedMap::SubMap& recent_map, const Vector3T& gravity, 
   }
 
   problem.max_iterations = 10;
-  bundler.solve(problem);
+  bool res = bundler.solve(problem);
 
-  // copy data back
-  {
+  // copy data back only if solver improved cost
+  if (res) {
     int pose_id = 0;
     for (const auto& [kf, preint] : recent_map.consecutive_keyframes) {
       const auto& pose = problem.rig_poses[pose_id];

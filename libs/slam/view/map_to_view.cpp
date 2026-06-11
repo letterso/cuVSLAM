@@ -123,18 +123,4 @@ void PublishLoopClosureToView(const Map& map, const std::vector<LandmarkInSolver
   }
 }
 
-void PublishLocalizerProbesToView(const Map& map, int64_t timestamp_ns, const std::vector<ViewLocalizerProbe>& probes,
-                                  ViewLocalizerProbes& view) {
-  const float cell_size = map.GetCellSize();  // for visualization
-  size_t i = 0;
-  for (; i < view.probes.size(); i++) {
-    if (i >= probes.size()) {
-      break;
-    }
-    view.probes[i] = probes[i];
-  }
-  view.timestamp_ns = timestamp_ns;
-  view.num_probes = static_cast<uint32_t>(i);
-  view.size = cell_size;
-}
 }  // namespace cuvslam::slam

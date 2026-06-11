@@ -29,9 +29,8 @@ namespace cuvslam::epipolar {
 ///
 /// @param position              The position of the camera matrix. This is the location of the
 /// desired camera.
-/// @param lookingAt             A point in the direction that the camera is looking at. By
-/// convention, in the codebase, lookingAt is a point with negative value along the camera axis
-/// (z-axis).
+/// @param lookingAt             A point the camera looks at (in world coordinates). +Z in the
+/// constructed camera frame points from the camera toward this point (OpenCV-style forward).
 /// @param up                    The up vector is a hint for the direction of the y-axis. The up
 /// vector will be tranformed to the y-axis in a way that ensure an orthonormal basis.
 /// @param [in,out] cameraMatrix The camera matrix that was created, if the call to

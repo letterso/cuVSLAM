@@ -23,6 +23,7 @@
 #include "json/json.h"
 
 #include "common/camera_id.h"
+#include "common/coordinate_system.h"
 #include "common/imu_measurement.h"
 #include "common/include_json.h"
 #include "common/log.h"
@@ -104,10 +105,11 @@ bool CameraRigEdex::load_edex() {
   for (size_t i = 0; i < nCameras; ++i) {
     const edex::Camera& c = edex_.cameras_[useCameras_[i]];
 
-    cameras_[i].intrinsic = camera::CreateCameraModel(
-        c.intrinsics.resolution, c.intrinsics.focal, c.intrinsics.principal, c.intrinsics.distortion_model,
-        c.intrinsics.distortion_params.data(), c.intrinsics.distortion_params.size());
-    cameras_[i].transform = c.transform;
+    cameras_[i].intrinsic =
+        camera::CreateCameraModel(c.intrinsics.resolution, c.intrinsics.focal, c.intrinsics.principal,
+                                  camera::StringToDistortionModel(c.intrinsics.distortion_model),
+                                  c.intrinsics.distortion_params.data(), c.intrinsics.distortion_params.size());
+    cameras_[i].transform = LegacyEdexIsometryToOpenCV(c.transform);
     if (!cameras_[i].intrinsic) {
       TraceError("Wrong distortion type or number of parameters");
       return false;
@@ -357,7 +359,8 @@ bool CameraRigEdex::read_frame_metadata(const std::string& filename) {
       CameraId cam = std::distance(useCameras_.begin(), it);
       event.frame_metadata.camera[cam].filename = seqPath_ / frame_metadata_per_cam["filename"].asString();
       event.frame_metadata.camera[cam].timestamp_ns = frame_metadata_per_cam["timestamp"].asInt64();
-      if (cameras_[cam_id].has_depth) {
+      // Note: use 'cam' (index into cameras_) not 'cam_id' (original camera ID from JSON)
+      if (cameras_[cam].has_depth) {
         if (!root.isMember("depth")) {
           TraceError("No depth field in frame_metadata.jsonl");
         } else {
@@ -366,8 +369,9 @@ bool CameraRigEdex::read_frame_metadata(const std::string& filename) {
               TraceError("Wrong key for depth in frame_metadata.jsonl");
             }
 
-            if (depth_metadata_per_cam["id"].asInt() == cameras_[cam_id].depth_id) {
-              event.frame_metadata.camera[cam].depth_id = cameras_[cam_id].depth_id;
+            if (cameras_[cam].depth_id.has_value() &&
+                depth_metadata_per_cam["id"].asInt() == static_cast<int>(cameras_[cam].depth_id.value())) {
+              event.frame_metadata.camera[cam].depth_id = cameras_[cam].depth_id;
               event.frame_metadata.camera[cam].depth_filename =
                   seqPath_ / depth_metadata_per_cam["filename"].asString();
             }

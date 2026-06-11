@@ -146,7 +146,7 @@ protected:
 
   virtual void SetupPointsProjectionsFromCameras(const Isometry3T& camera1, const Isometry3T& camera2) {
     // Generate 3D points
-    points3D_ = utils::GeneratePointsInCube(numPoints_, minRange_, maxRange_);
+    points3D_ = GeneratePointsInCube(numPoints_, minRange_, maxRange_);
 
     // Project points on the 2 camera planes
     Project3DPointsInLocalCoordinates(camera1.inverse(), points3D_, expectedPoints1_);
